@@ -51,14 +51,15 @@ export default function DashboardPage() {
 
   const setupChart = () => {
     if (!chartRef.current) return;
-    const chart = createChart(chartRef.current, {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const chart = (createChart as any)(chartRef.current, {
       layout: { background: { color: 'transparent' }, textColor: '#b8c7f0' },
       grid: { vertLines: { color: '#0f1629' }, horzLines: { color: '#0f1629' } },
       width: chartRef.current.clientWidth,
       height: 360,
       timeScale: { borderColor: '#1f2a44' },
       rightPriceScale: { borderColor: '#1f2a44' },
-    }) as unknown as import('lightweight-charts').IChartApi;
+    });
     const candle = chart.addCandlestickSeries({
       upColor: '#3cff8d',
       downColor: '#ff5c8d',

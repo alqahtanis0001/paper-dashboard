@@ -23,7 +23,8 @@ const bodySchema = z.object({
   jumps: z.array(jumpSchema).optional(),
 });
 
-export async function PUT(req: NextRequest, { params }: { params: { id: string } }) {
+export async function PUT(req: NextRequest, context: { params: Promise<{ id: string }> }) {
+  const params = await context.params;
   try {
     await requireAdminSession(req);
   } catch {
@@ -63,7 +64,8 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
   return NextResponse.json({ deal: updated });
 }
 
-export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
+export async function DELETE(req: NextRequest, context: { params: Promise<{ id: string }> }) {
+  const params = await context.params;
   try {
     await requireAdminSession(req);
   } catch {

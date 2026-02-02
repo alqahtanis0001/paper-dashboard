@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, CSSProperties } from 'react';
-import { createChart, ISeriesApi, CandlestickData } from 'lightweight-charts';
+import { createChart, ISeriesApi, CandlestickData, UTCTimestamp } from 'lightweight-charts';
 import io from 'socket.io-client';
 
 type Wallet = { cashBalance: number; equity: number; pnlTotal: number };
@@ -39,7 +39,13 @@ export default function DashboardPage() {
   const pushPrice = (payload: { candle: { time: number; open: number; high: number; low: number; close: number } }) => {
     if (!candleSeries.current) return;
     const c = payload.candle;
-    const candle: CandlestickData = { time: c.time / 1000, open: c.open, high: c.high, low: c.low, close: c.close };
+    const candle: CandlestickData = {
+      time: (c.time / 1000) as UTCTimestamp,
+      open: c.open,
+      high: c.high,
+      low: c.low,
+      close: c.close,
+    };
     candleSeries.current.update(candle);
   };
 

@@ -169,6 +169,10 @@ class DealEngine {
   getCurrentPrice() {
     return this.price || this.currentDeal?.basePrice || 0;
   }
+
+  getActiveDealId() {
+    return this.currentDeal?.id ?? null;
+  }
 }
 
 // singleton

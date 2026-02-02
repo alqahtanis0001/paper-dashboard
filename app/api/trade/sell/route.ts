@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
       sizeUsd: position.sizeUsd,
       pnl,
       walletId: wallet.id,
-      dealId: position.metaDealId ?? undefined,
+      dealId: position.metaDealId ?? dealEngine.getActiveDealId() ?? undefined,
     },
   });
 

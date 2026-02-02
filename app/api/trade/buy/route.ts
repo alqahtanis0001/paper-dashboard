@@ -16,6 +16,7 @@ export async function POST(req: NextRequest) {
   if (open) return NextResponse.json({ error: 'Position already open' }, { status: 400 });
 
   const price = dealEngine.getCurrentPrice() || 100;
+  const activeDealId = dealEngine.getActiveDealId();
   const sizeUsd = defaultTradeSize();
 
   if (wallet.cashBalance < sizeUsd) {
@@ -30,6 +31,7 @@ export async function POST(req: NextRequest) {
       entryTime: new Date(),
       sizeUsd,
       walletId: wallet.id,
+      metaDealId: activeDealId ?? undefined,
     },
   });
 
@@ -40,7 +42,7 @@ export async function POST(req: NextRequest) {
       price,
       sizeUsd,
       walletId: wallet.id,
-      dealId: position.metaDealId ?? undefined,
+      dealId: activeDealId ?? undefined,
     },
   });
 

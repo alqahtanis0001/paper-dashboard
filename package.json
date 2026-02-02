@@ -9,7 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "@prisma/client": "^7.3.0",
+    "@prisma/client": "^6.16.0",
     "cookie": "^1.1.1",
     "dayjs": "^1.11.19",
     "lightweight-charts": "^5.1.0",
@@ -29,7 +29,7 @@
     "@types/uuid": "^10.0.0",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
-    "prisma": "^7.3.0",
+    "prisma": "^6.16.0",
     "typescript": "^5"
   }
 }

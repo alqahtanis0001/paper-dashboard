@@ -176,6 +176,17 @@ class DealEngine {
 }
 
 // singleton
-const globalEngine = (globalThis as unknown as { dealEngine?: DealEngine });
-export const dealEngine = globalEngine.dealEngine ?? new DealEngine();
+class DealEngineDisabled {
+  // minimal interface to avoid crashes during build when DATABASE_URL is absent
+  getCurrentPrice() {
+    return 0;
+  }
+  getActiveDealId() {
+    return null;
+  }
+}
+
+const shouldRunEngine = !!process.env.DATABASE_URL;
+const globalEngine = (globalThis as unknown as { dealEngine?: DealEngine | DealEngineDisabled });
+export const dealEngine = globalEngine.dealEngine ?? (shouldRunEngine ? new DealEngine() : new DealEngineDisabled());
 if (!globalEngine.dealEngine) globalEngine.dealEngine = dealEngine;

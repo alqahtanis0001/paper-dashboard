@@ -1,0 +1,115 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum DealStatus {
+  SCHEDULED
+  RUNNING
+  FINISHED
+}
+
+enum WithdrawalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum TradeSide {
+  BUY
+  SELL
+}
+
+model AuthSession {
+  id           String   @id @default(uuid())
+  createdAt    DateTime @default(now())
+  expiresAt    DateTime
+  sessionToken String   @unique
+  isAdmin      Boolean  @default(false)
+}
+
+model Wallet {
+  id          String   @id @default(uuid())
+  cashBalance Float    @default(10000)
+  equity      Float    @default(10000)
+  pnlTotal    Float    @default(0)
+  updatedAt   DateTime @updatedAt
+
+  positions Position[]
+  trades    Trade[]
+}
+
+model Position {
+  id          String    @id @default(uuid())
+  isOpen      Boolean   @default(false)
+  symbol      String
+  entryPrice  Float?
+  entryTime   DateTime?
+  sizeUsd     Float?
+  walletId    String?
+  wallet      Wallet?   @relation(fields: [walletId], references: [id])
+  metaDealId  String?
+  metaDeal    Deal?     @relation(fields: [metaDealId], references: [id])
+}
+
+model Trade {
+  id       String    @id @default(uuid())
+  time     DateTime  @default(now())
+  symbol   String
+  side     TradeSide
+  price    Float
+  sizeUsd  Float
+  pnl      Float?
+  walletId String?
+  wallet   Wallet?   @relation(fields: [walletId], references: [id])
+  dealId   String?
+  deal     Deal?     @relation(fields: [dealId], references: [id])
+}
+
+model Deal {
+  id               String      @id @default(uuid())
+  symbol           String
+  chainName        String
+  basePrice        Float
+  startTimeUtc     DateTime
+  totalDurationSec Int
+  dropDelaySec     Int
+  dropMagnitudePct Float
+  createdAt        DateTime    @default(now())
+  status           DealStatus  @default(SCHEDULED)
+
+  jumps    DealJump[]
+  trades   Trade[]
+  signals  AiSignalLog[]
+  positions Position[]
+}
+
+model DealJump {
+  id               String   @id @default(uuid())
+  dealId           String
+  deal             Deal     @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  riseDelaySec     Int
+  riseMagnitudePct Float
+  holdSec          Int
+  orderIndex       Int
+}
+
+model WithdrawalRequest {
+  id     String            @id @default(uuid())
+  time   DateTime          @default(now())
+  amount Float
+  status WithdrawalStatus  @default(PENDING)
+}
+
+model AiSignalLog {
+  id               String   @id @default(uuid())
+  time             DateTime @default(now())
+  dealId           String?
+  deal             Deal?    @relation(fields: [dealId], references: [id], onDelete: SetNull)
+  signalsJson      Json
+  metaDecisionJson Json
+}

@@ -1,6 +1,6 @@
 import { Deal, DealJump } from '@prisma/client';
 import { prisma } from '../prisma';
-import { buildSignals, aggregateSignals, ModelSignal } from '../ai';
+import { buildSignals, aggregateSignals } from '../ai';
 import { getIO } from '../socketServer';
 
 type Candle = {
@@ -156,8 +156,8 @@ class DealEngine {
   private async finishDeal() {
     if (!this.currentDeal) return;
     const dealId = this.currentDeal.id;
-    this.tickTimer && clearInterval(this.tickTimer);
-    this.candleTimer && clearInterval(this.candleTimer);
+    if (this.tickTimer) clearInterval(this.tickTimer);
+    if (this.candleTimer) clearInterval(this.candleTimer);
     this.tickTimer = null;
     this.candleTimer = null;
     await prisma.deal.update({ where: { id: dealId }, data: { status: 'FINISHED' } }).catch(() => null);

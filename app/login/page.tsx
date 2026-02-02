@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useState } from 'react';
+import { CSSProperties, FormEvent, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 export default function LoginPage() {
@@ -29,7 +29,7 @@ export default function LoginPage() {
 
   return (
     <div style={styles.page}>
-      <div style={styles.card as any} className="glass">
+      <div style={styles.card} className="glass">
         <h1 style={styles.title}>AI Meta Desk</h1>
         <p style={styles.subtitle}>Passkey-only access. The AIs take it from here.</p>
         <form onSubmit={submit} style={{ width: '100%' }}>
@@ -38,11 +38,11 @@ export default function LoginPage() {
             type="password"
             value={passkey}
             onChange={(e) => setPasskey(e.target.value)}
-            style={styles.input as any}
+            style={styles.input}
             placeholder="Enter passkey"
           />
           {error && <p style={styles.error}>{error}</p>}
-          <button type="submit" disabled={loading} style={styles.button as any}>
+          <button type="submit" disabled={loading} style={styles.button}>
             {loading ? 'Verifying…' : 'Enter Dashboard'}
           </button>
         </form>
@@ -54,7 +54,7 @@ export default function LoginPage() {
   );
 }
 
-const styles: Record<string, React.CSSProperties> = {
+const styles: Record<string, CSSProperties> = {
   page: {
     minHeight: '100vh',
     display: 'flex',

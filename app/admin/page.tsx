@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useEffect, useState } from 'react';
+import { CSSProperties, FormEvent, useEffect, useState } from 'react';
 import dayjs from 'dayjs';
 
 type Deal = {
@@ -98,7 +98,7 @@ export default function AdminPage() {
   if (!authed) {
     return (
       <div style={styles.page}>
-        <div style={styles.card as any} className="glass">
+        <div style={styles.card} className="glass">
           <h1>Admin Console</h1>
           <p style={{ color: 'var(--muted)' }}>Enter admin passkey to orchestrate scenarios.</p>
           <form onSubmit={login} style={{ width: '100%' }}>
@@ -107,10 +107,10 @@ export default function AdminPage() {
               value={passkey}
               onChange={(e) => setPasskey(e.target.value)}
               placeholder="Admin passkey"
-              style={styles.input as any}
+              style={styles.input}
             />
             {error && <p style={styles.error}>{error}</p>}
-            <button style={styles.button as any}>Authenticate</button>
+            <button style={styles.button}>Authenticate</button>
           </form>
         </div>
       </div>
@@ -122,37 +122,37 @@ export default function AdminPage() {
       <div className="glass" style={{ padding: '1.5rem' }}>
         <h2 style={{ marginBottom: '0.6rem' }}>Schedule Deal</h2>
         <form onSubmit={createDeal} style={{ display: 'grid', gap: '0.8rem', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))' }}>
-          <input style={styles.input as any} value={form.symbol} onChange={(e) => setForm({ ...form, symbol: e.target.value })} placeholder="Symbol" />
-          <input style={styles.input as any} value={form.chainName} onChange={(e) => setForm({ ...form, chainName: e.target.value })} placeholder="Chain" />
+          <input style={styles.input} value={form.symbol} onChange={(e) => setForm({ ...form, symbol: e.target.value })} placeholder="Symbol" />
+          <input style={styles.input} value={form.chainName} onChange={(e) => setForm({ ...form, chainName: e.target.value })} placeholder="Chain" />
           <input
-            style={styles.input as any}
+            style={styles.input}
             type="number"
             value={form.basePrice}
             onChange={(e) => setForm({ ...form, basePrice: Number(e.target.value) })}
             placeholder="Base price"
           />
           <input
-            style={styles.input as any}
+            style={styles.input}
             value={form.startTimeUtc}
             onChange={(e) => setForm({ ...form, startTimeUtc: e.target.value })}
             placeholder="Start time (ISO)"
           />
           <input
-            style={styles.input as any}
+            style={styles.input}
             type="number"
             value={form.totalDurationSec}
             onChange={(e) => setForm({ ...form, totalDurationSec: Number(e.target.value) })}
             placeholder="Duration sec"
           />
           <input
-            style={styles.input as any}
+            style={styles.input}
             type="number"
             value={form.dropDelaySec}
             onChange={(e) => setForm({ ...form, dropDelaySec: Number(e.target.value) })}
             placeholder="Drop delay sec"
           />
           <input
-            style={styles.input as any}
+            style={styles.input}
             type="number"
             value={form.dropMagnitudePct}
             onChange={(e) => setForm({ ...form, dropMagnitudePct: Number(e.target.value) })}
@@ -162,7 +162,7 @@ export default function AdminPage() {
             <div key={idx} className="glass" style={{ padding: '0.8rem', border: '1px dashed var(--border)' }}>
               <div style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 6 }}>Rise #{idx + 1}</div>
               <input
-                style={styles.input as any}
+                style={styles.input}
                 type="number"
                 value={jump.riseDelaySec}
                 onChange={(e) =>
@@ -171,7 +171,7 @@ export default function AdminPage() {
                 placeholder="Rise delay sec"
               />
               <input
-                style={styles.input as any}
+                style={styles.input}
                 type="number"
                 value={jump.riseMagnitudePct}
                 onChange={(e) =>
@@ -180,14 +180,14 @@ export default function AdminPage() {
                 placeholder="Rise %"
               />
               <input
-                style={styles.input as any}
+                style={styles.input}
                 type="number"
                 value={jump.holdSec}
                 onChange={(e) => setJumps(jumps.map((j, jdx) => (jdx === idx ? { ...j, holdSec: Number(e.target.value) } : j)))}
                 placeholder="Hold sec"
               />
               <input
-                style={styles.input as any}
+                style={styles.input}
                 type="number"
                 value={jump.orderIndex}
                 onChange={(e) =>
@@ -197,7 +197,7 @@ export default function AdminPage() {
               />
             </div>
           ))}
-          <button type="submit" disabled={saving} style={styles.button as any}>
+          <button type="submit" disabled={saving} style={styles.button}>
             {saving ? 'Creating…' : 'Create Deal'}
           </button>
           {error && <p style={styles.error}>{error}</p>}
@@ -206,7 +206,7 @@ export default function AdminPage() {
       <div className="glass" style={{ padding: '1.5rem' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h3>Deals</h3>
-          <button onClick={loadDeals} style={{ ...styles.button, width: 'auto', padding: '0.5rem 0.9rem' } as any}>
+          <button onClick={loadDeals} style={{ ...styles.button, width: 'auto', padding: '0.5rem 0.9rem' }}>
             Refresh
           </button>
         </div>
@@ -227,7 +227,7 @@ export default function AdminPage() {
                   </span>
                 ))}
               </div>
-              <button onClick={() => activateDeal(d.id)} style={{ ...styles.button, marginTop: 8 } as any}>
+              <button onClick={() => activateDeal(d.id)} style={{ ...styles.button, marginTop: 8 }}>
                 Activate now
               </button>
             </div>
@@ -238,7 +238,7 @@ export default function AdminPage() {
   );
 }
 
-const styles: Record<string, React.CSSProperties> = {
+const styles: Record<string, CSSProperties> = {
   page: {
     minHeight: '100vh',
     display: 'flex',

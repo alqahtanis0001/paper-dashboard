@@ -33,13 +33,13 @@ export async function PUT(req: NextRequest, { params }: { params: { id: string }
   const parsed = bodySchema.safeParse(data);
   if (!parsed.success) return NextResponse.json({ error: 'Invalid payload' }, { status: 400 });
 
-  const updates: any = { ...parsed.data };
+  const updates: Record<string, unknown> = { ...parsed.data };
   if (updates.startTimeUtc) {
-    updates.startTimeUtc = new Date(updates.startTimeUtc);
+    updates.startTimeUtc = new Date(updates.startTimeUtc as string);
   }
   delete updates.jumps;
 
-  const deal = await prisma.deal.update({
+  await prisma.deal.update({
     where: { id: params.id },
     data: updates,
     include: { jumps: true },

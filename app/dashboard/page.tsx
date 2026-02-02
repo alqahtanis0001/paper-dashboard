@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, CSSProperties } from 'react';
 import { createChart, ISeriesApi, CandlestickData } from 'lightweight-charts';
-import io, { Socket } from 'socket.io-client';
+import io from 'socket.io-client';
 
 type Wallet = { cashBalance: number; equity: number; pnlTotal: number };
 type Position = { isOpen: boolean; entryPrice: number; sizeUsd: number; symbol: string } | null;
@@ -19,7 +19,6 @@ const lightColor = {
 export default function DashboardPage() {
   const chartRef = useRef<HTMLDivElement>(null);
   const candleSeries = useRef<ISeriesApi<'Candlestick'> | null>(null);
-  const socketRef = useRef<Socket | null>(null);
 
   const [wallet, setWallet] = useState<Wallet | null>(null);
   const [position, setPosition] = useState<Position>(null);
@@ -37,26 +36,7 @@ export default function DashboardPage() {
   const [dealState, setDealState] = useState('WAITING');
   const [warning, setWarning] = useState('');
 
-  useEffect(() => {
-    fetchWallet();
-    setupChart();
-    const socket = io('', { path: '/api/socket' });
-    socketRef.current = socket;
-    socket.on('connect', () => setMetaStatus('Scanning markets…'));
-    socket.on('meta_status', (p) => setMetaStatus(p.text));
-    socket.on('market_selected', (p) => setSelectedMarket({ symbol: p.symbol, chainName: p.chainName }));
-    socket.on('price_tick', (payload) => pushPrice(payload));
-    socket.on('ai_signals', (payload) => {
-      setSignals(payload.signals);
-      setMeta(payload.meta);
-    });
-    socket.on('deal_state', (p) => setDealState(p.status));
-    return () => {
-      socket.disconnect();
-    };
-  }, []);
-
-  const pushPrice = (payload: { candle: any }) => {
+  const pushPrice = (payload: { candle: { time: number; open: number; high: number; low: number; close: number } }) => {
     if (!candleSeries.current) return;
     const c = payload.candle;
     const candle: CandlestickData = { time: c.time / 1000, open: c.open, high: c.high, low: c.low, close: c.close };
@@ -97,6 +77,27 @@ export default function DashboardPage() {
     }
   };
 
+  useEffect(() => {
+    const load = async () => {
+      await fetchWallet();
+    };
+    load();
+    setupChart();
+    const socket = io('', { path: '/api/socket' });
+    socket.on('connect', () => setMetaStatus('Scanning markets…'));
+    socket.on('meta_status', (p) => setMetaStatus(p.text));
+    socket.on('market_selected', (p) => setSelectedMarket({ symbol: p.symbol, chainName: p.chainName }));
+    socket.on('price_tick', (payload) => pushPrice(payload));
+    socket.on('ai_signals', (payload) => {
+      setSignals(payload.signals);
+      setMeta(payload.meta);
+    });
+    socket.on('deal_state', (p) => setDealState(p.status));
+    return () => {
+      socket.disconnect();
+    };
+  }, []);
+
   const act = async (side: 'BUY' | 'SELL') => {
     setWarning('');
     if (meta.action !== side && meta.action !== 'WAIT') {
@@ -115,7 +116,7 @@ export default function DashboardPage() {
   return (
     <div style={styles.page}>
       <div style={styles.walletRow}>
-        <div className="glass" style={styles.walletCard as any}>
+        <div className="glass" style={styles.walletCard}>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
             <div>
               <div style={styles.label}>Wallet Balance</div>
@@ -133,12 +134,22 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
-        <button onClick={async () => await fetch('/api/withdraw', { method: 'POST', body: JSON.stringify({ amount: 1000 }), headers: { 'Content-Type': 'application/json' } })} className="glass" style={styles.withdraw as any}>
+        <button
+          onClick={async () =>
+            await fetch('/api/withdraw', {
+              method: 'POST',
+              body: JSON.stringify({ amount: 1000 }),
+              headers: { 'Content-Type': 'application/json' },
+            })
+          }
+          className="glass"
+          style={styles.withdraw}
+        >
           Request Withdraw
         </button>
       </div>
 
-      <div className="glass" style={styles.chartCard as any}>
+      <div className="glass" style={styles.chartCard}>
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
           <div>
             <div style={styles.label}>Meta-AI</div>
@@ -146,6 +157,11 @@ export default function DashboardPage() {
             {selectedMarket && (
               <div style={{ color: 'var(--muted)', marginTop: 4 }}>
                 {selectedMarket.symbol} • {selectedMarket.chainName} • Deal {dealState}
+              </div>
+            )}
+            {position && (
+              <div style={{ color: 'var(--muted)', marginTop: 4 }}>
+                Open: {position.symbol} @ ${position.entryPrice?.toFixed(2)} size ${position.sizeUsd?.toFixed(0)}
               </div>
             )}
           </div>
@@ -161,7 +177,7 @@ export default function DashboardPage() {
 
       <div style={styles.aiRow}>
         {signals.map((s) => (
-          <div key={s.model} className="glass" style={styles.aiCard as any}>
+          <div key={s.model} className="glass" style={styles.aiCard}>
             <div style={{ fontSize: 13, color: 'var(--muted)' }}>{s.model}</div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span
@@ -180,7 +196,7 @@ export default function DashboardPage() {
       </div>
 
       <div style={styles.metaCardRow}>
-        <div className="glass" style={styles.metaCard as any}>
+        <div className="glass" style={styles.metaCard}>
           <div style={{ fontSize: 14, color: 'var(--muted)' }}>Meta-AI</div>
           <div style={{ fontSize: 28, fontWeight: 800 }}>{meta.action}</div>
           <div style={{ color: 'var(--muted)' }}>{meta.confidence}% agreement</div>
@@ -230,7 +246,7 @@ export default function DashboardPage() {
   );
 }
 
-const styles: Record<string, React.CSSProperties> = {
+const styles: Record<string, CSSProperties> = {
   page: {
     maxWidth: 960,
     margin: '0 auto',

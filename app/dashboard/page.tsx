@@ -58,7 +58,7 @@ export default function DashboardPage() {
       height: 360,
       timeScale: { borderColor: '#1f2a44' },
       rightPriceScale: { borderColor: '#1f2a44' },
-    });
+    }) as unknown as import('lightweight-charts').IChartApi;
     const candle = chart.addCandlestickSeries({
       upColor: '#3cff8d',
       downColor: '#ff5c8d',

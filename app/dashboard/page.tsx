@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, CSSProperties } from 'react';
-import type { ISeriesApi, CandlestickData, UTCTimestamp, IChartApi } from 'lightweight-charts';
+import type { ISeriesApi, CandlestickData, UTCTimestamp } from 'lightweight-charts';
 import io from 'socket.io-client';
 
 type Wallet = { cashBalance: number; equity: number; pnlTotal: number };
@@ -71,6 +71,7 @@ export default function DashboardPage() {
         await fetchWallet();
         const { createChart } = await import('lightweight-charts');
         if (chartRef.current) {
+          // use any to avoid type mismatch in certain builds
           chart = createChart(chartRef.current, {
             layout: { background: { color: 'transparent' }, textColor: '#b8c7f0' },
             grid: { vertLines: { color: '#0f1629' }, horzLines: { color: '#0f1629' } },
@@ -79,7 +80,7 @@ export default function DashboardPage() {
             timeScale: { borderColor: '#1f2a44' },
             rightPriceScale: { borderColor: '#1f2a44' },
           });
-          const candle = chart.addCandlestickSeries({
+          const candle = (chart as any).addCandlestickSeries?.({
             upColor: '#3cff8d',
             downColor: '#ff5c8d',
             borderVisible: false,
@@ -87,7 +88,7 @@ export default function DashboardPage() {
             wickDownColor: '#ff5c8d',
           });
           candleSeries.current = candle;
-          resizeHandler = () => chart?.applyOptions({ width: chartRef.current?.clientWidth ?? 360 });
+          resizeHandler = () => (chart as any)?.applyOptions?.({ width: chartRef.current?.clientWidth ?? 360 });
           window.addEventListener('resize', resizeHandler);
         }
 

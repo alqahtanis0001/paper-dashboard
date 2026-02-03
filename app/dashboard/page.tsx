@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, CSSProperties } from 'react';
-import { createChart, ISeriesApi, CandlestickData, UTCTimestamp } from 'lightweight-charts';
+import type { ISeriesApi, CandlestickData, UTCTimestamp, IChartApi } from 'lightweight-charts';
 import io from 'socket.io-client';
 
 type Wallet = { cashBalance: number; equity: number; pnlTotal: number };
@@ -50,29 +50,6 @@ export default function DashboardPage() {
     candleSeries.current.update(candle);
   };
 
-  const setupChart = () => {
-    if (!chartRef.current) return;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const chart = (createChart as any)(chartRef.current, {
-      layout: { background: { color: 'transparent' }, textColor: '#b8c7f0' },
-      grid: { vertLines: { color: '#0f1629' }, horzLines: { color: '#0f1629' } },
-      width: chartRef.current.clientWidth,
-      height: 360,
-      timeScale: { borderColor: '#1f2a44' },
-      rightPriceScale: { borderColor: '#1f2a44' },
-    });
-    const candle = chart.addCandlestickSeries({
-      upColor: '#3cff8d',
-      downColor: '#ff5c8d',
-      borderVisible: false,
-      wickUpColor: '#3cff8d',
-      wickDownColor: '#ff5c8d',
-    });
-    candleSeries.current = candle;
-    const handleResize = () => chart.applyOptions({ width: chartRef.current?.clientWidth ?? 360 });
-    window.addEventListener('resize', handleResize);
-  };
-
   const fetchWallet = async () => {
     const res = await fetch('/api/wallet');
     if (res.ok) {
@@ -87,11 +64,35 @@ export default function DashboardPage() {
 
   useEffect(() => {
     const guard = async () => {
+      let socket: ReturnType<typeof io> | null = null;
+      let chart: IChartApi | null = null;
+      let resizeHandler: (() => void) | null = null;
       try {
         await fetchWallet();
-        setupChart();
-        const socket = io('', { path: '/api/socket' });
-        socket.on('connect', () => setMetaStatus('Scanning markets…'));
+        const { createChart } = await import('lightweight-charts');
+        if (chartRef.current) {
+          chart = createChart(chartRef.current, {
+            layout: { background: { color: 'transparent' }, textColor: '#b8c7f0' },
+            grid: { vertLines: { color: '#0f1629' }, horzLines: { color: '#0f1629' } },
+            width: chartRef.current.clientWidth,
+            height: 360,
+            timeScale: { borderColor: '#1f2a44' },
+            rightPriceScale: { borderColor: '#1f2a44' },
+          });
+          const candle = chart.addCandlestickSeries({
+            upColor: '#3cff8d',
+            downColor: '#ff5c8d',
+            borderVisible: false,
+            wickUpColor: '#3cff8d',
+            wickDownColor: '#ff5c8d',
+          });
+          candleSeries.current = candle;
+          resizeHandler = () => chart?.applyOptions({ width: chartRef.current?.clientWidth ?? 360 });
+          window.addEventListener('resize', resizeHandler);
+        }
+
+        socket = io('', { path: '/api/socket' });
+        socket.on('connect', () => setMetaStatus('Scanning markets...'));
         socket.on('meta_status', (p) => setMetaStatus(p.text));
         socket.on('market_selected', (p) => setSelectedMarket({ symbol: p.symbol, chainName: p.chainName }));
         socket.on('price_tick', (payload) => pushPrice(payload));
@@ -101,7 +102,9 @@ export default function DashboardPage() {
         });
         socket.on('deal_state', (p) => setDealState(p.status));
         return () => {
-          socket.disconnect();
+          socket?.disconnect();
+          if (resizeHandler) window.removeEventListener('resize', resizeHandler);
+          chart?.remove?.();
         };
       } catch (err) {
         console.error('Fatal dashboard error', err);

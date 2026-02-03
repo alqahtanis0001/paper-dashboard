@@ -65,7 +65,9 @@ export default function DashboardPage() {
   useEffect(() => {
     const guard = async () => {
       let socket: ReturnType<typeof io> | null = null;
-      let chart: IChartApi | null = null;
+      // use loose typing to avoid build-time API surface mismatches
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let chart: any = null;
       let resizeHandler: (() => void) | null = null;
       try {
         await fetchWallet();

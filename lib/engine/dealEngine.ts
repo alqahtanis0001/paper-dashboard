@@ -39,14 +39,22 @@ class DealEngine {
   private async checkDeals() {
     if (this.currentDeal) return;
     const now = new Date();
-    const deal = await prisma.deal.findFirst({
-      where: { status: 'SCHEDULED', startTimeUtc: { lte: now } },
-      include: { jumps: { orderBy: { orderIndex: 'asc' } } },
-      orderBy: { startTimeUtc: 'asc' },
-    });
-    if (deal) {
-      await prisma.deal.update({ where: { id: deal.id }, data: { status: 'RUNNING' } });
-      this.runDeal(deal);
+    try {
+      const deal = await prisma.deal.findFirst({
+        where: { status: 'SCHEDULED', startTimeUtc: { lte: now } },
+        include: { jumps: { orderBy: { orderIndex: 'asc' } } },
+        orderBy: { startTimeUtc: 'asc' },
+      });
+      if (deal) {
+        await prisma.deal.update({ where: { id: deal.id }, data: { status: 'RUNNING' } });
+        this.runDeal(deal);
+      }
+    } catch (err: any) {
+      // If tables are not ready (P2021) or connection issue, skip and retry on next tick
+      const code = err?.code;
+      if (process.env.NODE_ENV !== 'production') {
+        console.warn('[DealEngine] checkDeals skipped due to error:', code ?? err?.message ?? err);
+      }
     }
   }
 

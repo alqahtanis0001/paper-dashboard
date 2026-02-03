@@ -35,6 +35,7 @@ export default function DashboardPage() {
   const [selectedMarket, setSelectedMarket] = useState<{ symbol: string; chainName: string } | null>(null);
   const [dealState, setDealState] = useState('WAITING');
   const [warning, setWarning] = useState('');
+  const [fatalError, setFatalError] = useState<string | null>(null);
 
   const pushPrice = (payload: { candle: { time: number; open: number; high: number; low: number; close: number } }) => {
     if (!candleSeries.current) return;
@@ -85,24 +86,30 @@ export default function DashboardPage() {
   };
 
   useEffect(() => {
-    const load = async () => {
-      await fetchWallet();
+    const guard = async () => {
+      try {
+        await fetchWallet();
+        setupChart();
+        const socket = io('', { path: '/api/socket' });
+        socket.on('connect', () => setMetaStatus('Scanning markets…'));
+        socket.on('meta_status', (p) => setMetaStatus(p.text));
+        socket.on('market_selected', (p) => setSelectedMarket({ symbol: p.symbol, chainName: p.chainName }));
+        socket.on('price_tick', (payload) => pushPrice(payload));
+        socket.on('ai_signals', (payload) => {
+          setSignals(payload.signals);
+          setMeta(payload.meta);
+        });
+        socket.on('deal_state', (p) => setDealState(p.status));
+        return () => {
+          socket.disconnect();
+        };
+      } catch (err) {
+        console.error('Fatal dashboard error', err);
+        setFatalError(err instanceof Error ? err.message : 'Unknown error');
+      }
+      return undefined;
     };
-    load();
-    setupChart();
-    const socket = io('', { path: '/api/socket' });
-    socket.on('connect', () => setMetaStatus('Scanning markets…'));
-    socket.on('meta_status', (p) => setMetaStatus(p.text));
-    socket.on('market_selected', (p) => setSelectedMarket({ symbol: p.symbol, chainName: p.chainName }));
-    socket.on('price_tick', (payload) => pushPrice(payload));
-    socket.on('ai_signals', (payload) => {
-      setSignals(payload.signals);
-      setMeta(payload.meta);
-    });
-    socket.on('deal_state', (p) => setDealState(p.status));
-    return () => {
-      socket.disconnect();
-    };
+    guard();
   }, []);
 
   const act = async (side: 'BUY' | 'SELL') => {
@@ -122,6 +129,11 @@ export default function DashboardPage() {
 
   return (
     <div style={styles.page}>
+      {fatalError && (
+        <div className="glass" style={{ padding: '0.8rem', border: '1px solid #ff5c8d', color: '#ff5c8d' }}>
+          Client error: {fatalError}
+        </div>
+      )}
       <div style={styles.walletRow}>
         <div className="glass" style={styles.walletCard}>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>

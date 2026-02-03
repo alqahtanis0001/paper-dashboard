@@ -36,6 +36,8 @@ export default function DashboardPage() {
   const [dealState, setDealState] = useState('WAITING');
   const [warning, setWarning] = useState('');
   const [fatalError, setFatalError] = useState<string | null>(null);
+  const [hasChartData, setHasChartData] = useState(false);
+  const [scanTicker, setScanTicker] = useState('BTC/USDT · Solana · AVAX');
 
   const pushPrice = (payload: { candle: { time: number; open: number; high: number; low: number; close: number } }) => {
     if (!candleSeries.current) return;
@@ -48,6 +50,7 @@ export default function DashboardPage() {
       close: c.close,
     };
     candleSeries.current.update(candle);
+    setHasChartData(true);
   };
 
   const fetchWallet = async () => {
@@ -118,6 +121,23 @@ export default function DashboardPage() {
     guard();
   }, []);
 
+  // playful scanning text animation while waiting
+  useEffect(() => {
+    const tickers = [
+      'Scanning BTC/USDT on Solana',
+      'Scanning ETH/USDT on Arbitrum',
+      'Scanning AVAX/USDT on C-Chain',
+      'Scanning OP/USDT on Optimism',
+      'Scanning MATIC/USDT on Polygon',
+    ];
+    let i = 0;
+    const id = setInterval(() => {
+      setScanTicker(tickers[i % tickers.length]);
+      i += 1;
+    }, 900);
+    return () => clearInterval(id);
+  }, []);
+
   const act = async (side: 'BUY' | 'SELL') => {
     setWarning('');
     if (meta.action !== side && meta.action !== 'WAIT') {
@@ -178,7 +198,7 @@ export default function DashboardPage() {
         <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
           <div>
             <div style={styles.label}>Meta-AI</div>
-            <div style={{ fontSize: 16, fontWeight: 700 }}>{metaStatus}</div>
+            <div style={{ fontSize: 16, fontWeight: 700 }}>{hasChartData ? metaStatus : scanTicker}</div>
             {selectedMarket && (
               <div style={{ color: 'var(--muted)', marginTop: 4 }}>
                 {selectedMarket.symbol} • {selectedMarket.chainName} • Deal {dealState}
@@ -197,7 +217,21 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
-        <div ref={chartRef} style={{ width: '100%', height: 360 }} />
+        <div style={{ position: 'relative', width: '100%', height: 360 }}>
+          <div ref={chartRef} style={{ width: '100%', height: '100%', pointerEvents: 'none' }} />
+          {!hasChartData && (
+            <div style={styles.scanOverlay}>
+              <div style={styles.scanGlow} />
+              <div style={styles.scanBars}>
+                <div className="bar" />
+                <div className="bar" />
+                <div className="bar" />
+                <div className="bar" />
+              </div>
+              <div style={{ marginTop: 8, color: '#7ea4ff', fontSize: 12 }}>{scanTicker}</div>
+            </div>
+          )}
+        </div>
       </div>
 
       <div style={styles.aiRow}>
@@ -306,4 +340,59 @@ const styles: Record<string, CSSProperties> = {
     borderRadius: 10,
     cursor: 'pointer',
   },
+  scanOverlay: {
+    position: 'absolute',
+    inset: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'linear-gradient(135deg, rgba(37,59,110,0.4), rgba(12,18,36,0.6))',
+    borderRadius: 8,
+    pointerEvents: 'none',
+  },
+  scanGlow: {
+    width: '80%',
+    height: 2,
+    background: 'linear-gradient(90deg, transparent, #5df3a6, transparent)',
+    animation: 'sweep 1.6s infinite',
+  },
+  scanBars: {
+    width: '70%',
+    display: 'grid',
+    gridTemplateColumns: 'repeat(4,1fr)',
+    gap: 10,
+    marginTop: 14,
+  },
 };
+
+// inject keyframes once on client
+if (typeof document !== 'undefined') {
+  const id = 'scan-anim';
+  if (!document.getElementById(id)) {
+    const style = document.createElement('style');
+    style.id = id;
+    style.innerHTML = `
+      @keyframes sweep { 
+        0% { transform: translateX(-30%); opacity: 0.2; }
+        50% { transform: translateX(30%); opacity: 0.9; }
+        100% { transform: translateX(80%); opacity: 0.2; }
+      }
+      .bar {
+        height: 8px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, rgba(93,243,166,0.8), rgba(93,179,243,0.5));
+        animation: pulse 1.4s infinite ease-in-out;
+      }
+      .bar:nth-child(2) { animation-delay: 0.1s; }
+      .bar:nth-child(3) { animation-delay: 0.2s; }
+      .bar:nth-child(4) { animation-delay: 0.3s; }
+      @keyframes pulse { 
+        0% { transform: scaleX(0.6); opacity: 0.5; }
+        50% { transform: scaleX(1); opacity: 1; }
+        100% { transform: scaleX(0.7); opacity: 0.5; }
+      }
+    `;
+    document.head.appendChild(style);
+  }
+}

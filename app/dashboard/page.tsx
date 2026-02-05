@@ -91,7 +91,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     const setup = async () => {
-      const { createChart } = await import('lightweight-charts');
+      const { createChart, CandlestickSeries, HistogramSeries, LineSeries } = await import('lightweight-charts');
       if (!chartRef.current) return;
 
       const chart = createChart(chartRef.current, {
@@ -103,13 +103,13 @@ export default function DashboardPage() {
         handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
       });
       chartApi.current = chart;
-      candleSeries.current = chart.addCandlestickSeries({ upColor: '#3cff8d', downColor: '#ff5c8d', wickUpColor: '#3cff8d', wickDownColor: '#ff5c8d', borderVisible: false });
-      volumeSeries.current = chart.addHistogramSeries({ priceFormat: { type: 'volume' }, priceScaleId: '' });
+      candleSeries.current = chart.addSeries(CandlestickSeries, { upColor: '#3cff8d', downColor: '#ff5c8d', wickUpColor: '#3cff8d', wickDownColor: '#ff5c8d', borderVisible: false });
+      volumeSeries.current = chart.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceScaleId: '' });
       volumeSeries.current.priceScale().applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
-      ema20Series.current = chart.addLineSeries({ color: '#ffd166', lineWidth: 1 });
-      ema50Series.current = chart.addLineSeries({ color: '#6ea8ff', lineWidth: 1 });
-      upperBandSeries.current = chart.addLineSeries({ color: 'rgba(255,92,141,0.45)', lineWidth: 1 });
-      lowerBandSeries.current = chart.addLineSeries({ color: 'rgba(92,255,173,0.45)', lineWidth: 1 });
+      ema20Series.current = chart.addSeries(LineSeries, { color: '#ffd166', lineWidth: 1 });
+      ema50Series.current = chart.addSeries(LineSeries, { color: '#6ea8ff', lineWidth: 1 });
+      upperBandSeries.current = chart.addSeries(LineSeries, { color: 'rgba(255,92,141,0.45)', lineWidth: 1 });
+      lowerBandSeries.current = chart.addSeries(LineSeries, { color: 'rgba(92,255,173,0.45)', lineWidth: 1 });
 
       chart.subscribeCrosshairMove((param) => {
         const c = param.seriesData.get(candleSeries.current! as never) as unknown as CandlestickData | undefined;

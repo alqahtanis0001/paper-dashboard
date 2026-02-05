@@ -14,7 +14,9 @@ pnpm dev
 bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://127.0.0.1:3000](http://127.0.0.1:3000) with your browser (or VS Code port forwarding) to see the result.
+
+For Render deployment, keep using the existing production start command (`npm run start -- -p $PORT`) so no additional deployment changes are required.
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 

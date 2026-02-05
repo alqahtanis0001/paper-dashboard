@@ -14,7 +14,7 @@ export async function POST(req: NextRequest) {
   }
 
   const wallet = await getWallet();
-  const { sellPercent, midPrice, regimeVolatility } = await req.json().catch(() => ({}));
+  const { sellPercent } = await req.json().catch(() => ({}));
   if (typeof sellPercent !== 'number' || !Number.isFinite(sellPercent) || sellPercent <= 0 || sellPercent > 100) {
     return NextResponse.json({ error: 'sellPercent must be between 0 and 100' }, { status: 400 });
   }
@@ -22,14 +22,13 @@ export async function POST(req: NextRequest) {
   const position = await prisma.position.findFirst({ where: { isOpen: true } });
   if (!position || !position.entryPrice || !position.sizeUsd) return NextResponse.json({ error: 'No open position' }, { status: 400 });
 
-  const fallbackMid = dealEngine.getCurrentPrice() || position.entryPrice;
-  const effectiveMid = typeof midPrice === 'number' && Number.isFinite(midPrice) && midPrice > 0 ? midPrice : fallbackMid;
-  const vol = typeof regimeVolatility === 'number' && Number.isFinite(regimeVolatility) && regimeVolatility >= 0 ? regimeVolatility : 0.5;
+  const midPrice = dealEngine.getCurrentPrice() || position.entryPrice;
+  const regimeVolatility = dealEngine.getRegimeVolatility();
 
   const fraction = sellPercent / 100;
   const qtyTotal = position.sizeUsd / position.entryPrice;
   const qtyToSell = qtyTotal * fraction;
-  const { fillPrice, feeUsd: unitFeeUsd, slippageUsd: unitSlippageUsd, latencyMs } = simulateExecution(effectiveMid, 'sell', vol);
+  const { fillPrice, feeUsd: unitFeeUsd, slippageUsd: unitSlippageUsd, latencyMs } = simulateExecution(midPrice, 'sell', regimeVolatility);
 
   const proceeds = qtyToSell * fillPrice;
   const feeUsd = unitFeeUsd * qtyToSell;
@@ -60,14 +59,16 @@ export async function POST(req: NextRequest) {
         where: { id: wallet.id },
         data: {
           cashBalance: { increment: proceeds - feeUsd },
-          equity: { increment: pnl },
           pnlTotal: { increment: pnl },
         },
       });
 
       const updatedPosition = await tx.position.update({
         where: { id: position.id },
-        data: { isOpen: fraction >= 1 ? false : true, sizeUsd: fraction >= 1 ? 0 : remainingSizeUsd },
+        data: {
+          isOpen: fraction >= 1 ? false : true,
+          sizeUsd: fraction >= 1 ? 0 : remainingSizeUsd,
+        },
       });
 
       return { trade, updatedWallet, updatedPosition };
@@ -82,6 +83,8 @@ export async function POST(req: NextRequest) {
       latencyMs,
       pnl,
       tradeId: result.trade.id,
+      symbol: position.symbol,
+      dealId: position.metaDealId ?? dealEngine.getActiveDealId() ?? null,
     });
 
     return NextResponse.json({ trade: result.trade, wallet: result.updatedWallet, position: result.updatedPosition });

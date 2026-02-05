@@ -6,6 +6,15 @@ import { dealEngine } from '@/lib/engine/dealEngine';
 import { simulateExecution } from '@/lib/execution';
 import { logAuditEvent } from '@/lib/audit';
 
+async function getExecutionDeal() {
+  const activeDealId = dealEngine.getActiveDealId();
+  if (activeDealId) {
+    const deal = await prisma.deal.findUnique({ where: { id: activeDealId } });
+    if (deal) return deal;
+  }
+  return prisma.deal.findFirst({ where: { status: 'RUNNING' }, orderBy: { startTimeUtc: 'desc' } });
+}
+
 export async function POST(req: NextRequest) {
   try {
     await requireUserSession(req);
@@ -14,7 +23,7 @@ export async function POST(req: NextRequest) {
   }
 
   const wallet = await getWallet();
-  const { amountUsd, midPrice, regimeVolatility } = await req.json().catch(() => ({}));
+  const { amountUsd } = await req.json().catch(() => ({}));
   if (typeof amountUsd !== 'number' || !Number.isFinite(amountUsd) || amountUsd <= 0) {
     return NextResponse.json({ error: 'amountUsd must be > 0' }, { status: 400 });
   }
@@ -22,11 +31,12 @@ export async function POST(req: NextRequest) {
   const open = await prisma.position.findFirst({ where: { isOpen: true } });
   if (open) return NextResponse.json({ error: 'Position already open' }, { status: 400 });
 
-  const fallbackMid = dealEngine.getCurrentPrice() || 100;
-  const effectiveMid = typeof midPrice === 'number' && Number.isFinite(midPrice) && midPrice > 0 ? midPrice : fallbackMid;
-  const vol = typeof regimeVolatility === 'number' && Number.isFinite(regimeVolatility) && regimeVolatility >= 0 ? regimeVolatility : 0.5;
+  const activeDeal = await getExecutionDeal();
+  const symbol = activeDeal?.symbol ?? 'MARKET';
+  const midPrice = dealEngine.getCurrentPrice() || activeDeal?.basePrice || 100;
+  const regimeVolatility = dealEngine.getRegimeVolatility();
 
-  const { fillPrice, feeUsd: unitFeeUsd, slippageUsd: unitSlippageUsd, latencyMs } = simulateExecution(effectiveMid, 'buy', vol);
+  const { fillPrice, feeUsd: unitFeeUsd, slippageUsd: unitSlippageUsd, latencyMs } = simulateExecution(midPrice, 'buy', regimeVolatility);
   const quantity = amountUsd / fillPrice;
   const feeUsd = unitFeeUsd * quantity;
   const slippageUsd = unitSlippageUsd * quantity;
@@ -35,24 +45,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'amountUsd exceeds wallet cash after fees' }, { status: 400 });
   }
 
-  const activeDealId = dealEngine.getActiveDealId();
   try {
     const result = await prisma.$transaction(async (tx) => {
       const position = await tx.position.create({
         data: {
           isOpen: true,
-          symbol: 'SCENARIO',
+          symbol,
           entryPrice: fillPrice,
           entryTime: new Date(),
           sizeUsd: amountUsd,
           walletId: wallet.id,
-          metaDealId: activeDealId ?? undefined,
+          metaDealId: activeDeal?.id ?? undefined,
         },
       });
 
       const trade = await tx.trade.create({
         data: {
-          symbol: position.symbol,
+          symbol,
           side: 'BUY',
           price: fillPrice,
           fillPrice,
@@ -61,7 +70,7 @@ export async function POST(req: NextRequest) {
           latencyMs,
           sizeUsd: amountUsd,
           walletId: wallet.id,
-          dealId: activeDealId ?? undefined,
+          dealId: activeDeal?.id ?? undefined,
         },
       });
 
@@ -76,6 +85,8 @@ export async function POST(req: NextRequest) {
       slippageUsd,
       latencyMs,
       tradeId: result.trade.id,
+      symbol,
+      dealId: activeDeal?.id ?? null,
     });
 
     return NextResponse.json({ position: result.position, trade: result.trade, wallet: result.updatedWallet });

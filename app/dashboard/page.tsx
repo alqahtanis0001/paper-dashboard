@@ -1,15 +1,15 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState, CSSProperties } from 'react';
-import type { IChartApi, ISeriesApi, CandlestickData, HistogramData, LineData, UTCTimestamp } from 'lightweight-charts';
+import type { IChartApi, ISeriesApi, CandlestickData, HistogramData, LineData, Time, UTCTimestamp } from 'lightweight-charts';
 import io from 'socket.io-client';
 
-type Wallet = { cashBalance: number; equity: number; pnlTotal: number };
+type Wallet = { cashBalance: number; equity: number; liveEquity?: number; positionValue?: number; unrealizedPnl?: number; pnlTotal: number };
 type Trade = {
   id: string;
   time: string;
   symbol: string;
-  side: string;
+  side: 'BUY' | 'SELL';
   price: number;
   sizeUsd: number;
   pnl: number | null;
@@ -22,6 +22,28 @@ type ModelSignal = { model: string; signal: 'BUY' | 'SELL' | 'OFF'; confidence: 
 type Meta = { action: 'BUY' | 'SELL' | 'NO_TRADE'; confidence: number; reason: string };
 type ActivityEvent = { id: string; eventType: string; actorRole: string; createdAt: string; metadata: Record<string, unknown> };
 
+type ChartPreference = {
+  selectedSymbol?: string | null;
+  timeframe?: string | null;
+  zoomLogical?: number | null;
+  collapsedJson?: Record<string, boolean> | null;
+};
+
+const nearestCandleTime = (candles: CandlestickData<Time>[], tsSec: number) => {
+  if (!candles.length) return tsSec as UTCTimestamp;
+  let nearest = candles[0].time as number;
+  let best = Math.abs((candles[0].time as number) - tsSec);
+  for (const c of candles) {
+    const time = c.time as number;
+    const distance = Math.abs(time - tsSec);
+    if (distance < best) {
+      best = distance;
+      nearest = time;
+    }
+  }
+  return nearest as UTCTimestamp;
+};
+
 export default function DashboardPage() {
   const chartRef = useRef<HTMLDivElement>(null);
   const chartApi = useRef<IChartApi | null>(null);
@@ -32,6 +54,8 @@ export default function DashboardPage() {
   const upperBandSeries = useRef<ISeriesApi<'Line'> | null>(null);
   const lowerBandSeries = useRef<ISeriesApi<'Line'> | null>(null);
   const buyInputRef = useRef<HTMLInputElement>(null);
+  const sellInputRef = useRef<HTMLInputElement>(null);
+  const candlesRef = useRef<CandlestickData<Time>[]>([]);
 
   const [wallet, setWallet] = useState<Wallet | null>(null);
   const [trades, setTrades] = useState<Trade[]>([]);
@@ -43,6 +67,10 @@ export default function DashboardPage() {
   const [sellPercent, setSellPercent] = useState(100);
   const [warning, setWarning] = useState('');
   const [tooltip, setTooltip] = useState('');
+  const [selectedSymbol, setSelectedSymbol] = useState('AUTO');
+  const [timeframe, setTimeframe] = useState('1s');
+  const [zoomLogical, setZoomLogical] = useState<number | undefined>(undefined);
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ ai: false, tape: false, activity: false });
 
   const fetchWallet = async () => {
     const res = await fetch('/api/wallet');
@@ -74,14 +102,37 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
+    void fetch('/api/chart-state')
+      .then(async (res) => (res.ok ? res.json() : null))
+      .then((data: { preference?: ChartPreference } | null) => {
+        const pref = data?.preference;
+        if (!pref) return;
+        if (pref.selectedSymbol) setSelectedSymbol(pref.selectedSymbol);
+        if (pref.timeframe) setTimeframe(pref.timeframe);
+        if (typeof pref.zoomLogical === 'number') setZoomLogical(pref.zoomLogical);
+        if (pref.collapsedJson) setCollapsed({ ai: false, tape: false, activity: false, ...pref.collapsedJson });
+      })
+      .catch(() => null);
+  }, []);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      void fetch('/api/chart-state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ selectedSymbol, timeframe, zoomLogical, collapsed }),
+      }).catch(() => null);
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [selectedSymbol, timeframe, zoomLogical, collapsed]);
+
+  useEffect(() => {
     const pingWebsite = () => {
       void fetch('/api/ping', {
         method: 'GET',
         cache: 'no-store',
         keepalive: true,
-      }).catch(() => {
-        // Keep-alive ping failure should never interrupt dashboard interaction.
-      });
+      }).catch(() => null);
     };
 
     pingWebsite();
@@ -90,6 +141,7 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
+    let disconnect: (() => void) | undefined;
     const setup = async () => {
       const { createChart, CandlestickSeries, HistogramSeries, LineSeries } = await import('lightweight-charts');
       if (!chartRef.current) return;
@@ -118,16 +170,26 @@ export default function DashboardPage() {
         setTooltip(`O:${c.open.toFixed(2)} H:${c.high.toFixed(2)} L:${c.low.toFixed(2)} C:${c.close.toFixed(2)} ${pct.toFixed(2)}%`);
       });
 
+      chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+        if (!range) return;
+        setZoomLogical(range.to);
+      });
+
+      if (typeof zoomLogical === 'number') {
+        chart.timeScale().setVisibleLogicalRange({ from: zoomLogical - 120, to: zoomLogical });
+      }
+
       const socket = io('', { path: '/api/socket' });
+      socket.on('market_selected', (payload: { symbol: string }) => setSelectedSymbol(payload.symbol ?? 'AUTO'));
       socket.on('price_tick', (payload: { candle: { time: number; open: number; high: number; low: number; close: number; volume: number } }) => {
         const c = payload.candle;
         const item = { time: (c.time / 1000) as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close };
         candleSeries.current?.update(item);
         volumeSeries.current?.update({ time: item.time, value: c.volume, color: c.close >= c.open ? 'rgba(60,255,141,0.4)' : 'rgba(255,92,141,0.4)' } as HistogramData);
 
-        const existing = (window as Window & { __candles?: CandlestickData[] }).__candles ?? [];
-        const next = [...existing.filter((x) => x.time !== item.time), item].slice(-250);
-        (window as Window & { __candles?: CandlestickData[] }).__candles = next;
+        const next = [...candlesRef.current.filter((x) => x.time !== item.time), item].slice(-250);
+        candlesRef.current = next;
+
         const closes = next.map((x) => x.close);
         const ema = (period: number) => closes.map((_, i) => {
           const start = Math.max(0, i - period + 1);
@@ -148,19 +210,41 @@ export default function DashboardPage() {
         setHitRates(payload.hitRates);
       });
 
-      return () => {
+      disconnect = () => {
         socket.disconnect();
         chart.remove();
       };
     };
-    setup();
-  }, []);
+    void setup();
+
+    return () => disconnect?.();
+  }, [zoomLogical]);
+
+  useEffect(() => {
+    if (!candleSeries.current) return;
+    const markers = trades.slice(0, 30).map((t) => {
+      const eventSec = Math.floor(new Date(t.time).getTime() / 1000);
+      const candleTime = nearestCandleTime(candlesRef.current, eventSec);
+      return {
+        time: candleTime,
+        position: t.side === 'BUY' ? 'belowBar' : 'aboveBar',
+        color: t.side === 'BUY' ? '#3cff8d' : '#ff5c8d',
+        shape: t.side === 'BUY' ? 'arrowUp' : 'arrowDown',
+        text: `${t.side} $${t.sizeUsd.toFixed(2)} @ ${(t.fillPrice ?? t.price).toFixed(2)} · fee ${(t.feeUsd ?? 0).toFixed(2)} · slip ${(t.slippageUsd ?? 0).toFixed(2)} · ${(t.latencyMs ?? 0)}ms · ${new Date(t.time).toLocaleTimeString()}`,
+      };
+    });
+    (candleSeries.current as unknown as { setMarkers: (m: unknown[]) => void }).setMarkers(markers);
+  }, [trades]);
 
   useEffect(() => {
     const keyHandler = (e: KeyboardEvent) => {
       if (e.key.toLowerCase() === 'b') buyInputRef.current?.focus();
-      if (e.key.toLowerCase() === 's') setSellPercent(100);
-      if (e.key === 'Escape') setWarning('');
+      if (e.key.toLowerCase() === 's') sellInputRef.current?.focus();
+      if (e.key === 'Escape') {
+        setWarning('');
+        setTooltip('');
+        (document.activeElement as HTMLElement | null)?.blur?.();
+      }
     };
     window.addEventListener('keydown', keyHandler);
     return () => window.removeEventListener('keydown', keyHandler);
@@ -190,11 +274,16 @@ export default function DashboardPage() {
     <div style={styles.page}>
       <div className="glass" style={styles.row}>
         <div>Cash ${wallet?.cashBalance.toFixed(2) ?? '--'}</div>
-        <div>Equity ${wallet?.equity.toFixed(2) ?? '--'}</div>
+        <div>Equity ${(wallet?.liveEquity ?? wallet?.equity ?? 0).toFixed(2)}</div>
+        <div>Position ${(wallet?.positionValue ?? 0).toFixed(2)}</div>
         <div style={{ color: (wallet?.pnlTotal ?? 0) >= 0 ? '#3cff8d' : '#ff5c8d' }}>PnL ${wallet?.pnlTotal.toFixed(2) ?? '--'}</div>
       </div>
 
       <div className="glass" style={{ padding: 12 }}>
+        <div style={styles.controls}>
+          <select value={selectedSymbol} onChange={(e) => setSelectedSymbol(e.target.value)} style={styles.input}><option value="AUTO">AUTO</option><option value="BTC/USDT">BTC/USDT</option><option value="ETH/USDT">ETH/USDT</option></select>
+          <select value={timeframe} onChange={(e) => setTimeframe(e.target.value)} style={styles.input}><option value="1s">1s</option><option value="5s">5s</option><option value="15s">15s</option></select>
+        </div>
         <div ref={chartRef} style={{ width: '100%', height: 430 }} />
         <div style={{ color: 'var(--muted)', marginTop: 6 }}>{tooltip || meta.reason}</div>
       </div>
@@ -208,6 +297,7 @@ export default function DashboardPage() {
         </div>
         <div className="glass" style={styles.card}>
           <h3>Sell (S)</h3>
+          <input ref={sellInputRef} type="number" value={sellPercent} min={1} max={100} onChange={(e) => setSellPercent(Math.max(1, Math.min(100, Number(e.target.value) || 1)))} style={styles.input} />
           <div style={styles.quickRow}>{[25, 50, 100].map((pct) => <button key={pct} style={styles.quickBtn} onClick={() => setSellPercent(pct)}>{pct}%</button>)}</div>
           <button style={{ ...styles.button, background: '#3cff8d', color: '#07110b' }} onClick={() => act('SELL', { sellPercent })}>Sell {sellPercent}%</button>
         </div>
@@ -217,24 +307,26 @@ export default function DashboardPage() {
 
       <div style={styles.panels}>
         <div className="glass" style={styles.card}>
-          <h3>AI Feed</h3>
-          <div>Meta: {meta.action} ({meta.confidence}%) · hit {hitRates.meta}%</div>
-          {signals.map((s) => (
-            <div key={s.model} style={{ marginTop: 8 }}>
-              <strong>{s.model}</strong> {s.signal} ({hitRates.agents[s.model] ?? 0}%)
-              <div style={{ color: 'var(--muted)', fontSize: 12 }}>{s.reasons.join(' · ')}</div>
-            </div>
-          ))}
+          <button style={styles.toggle} onClick={() => setCollapsed((v) => ({ ...v, ai: !v.ai }))}><h3>AI Feed</h3></button>
+          {!collapsed.ai && <>
+            <div>Meta: {meta.action} ({meta.confidence}%) · hit {hitRates.meta}%</div>
+            {signals.map((s) => (
+              <div key={s.model} style={{ marginTop: 8 }}>
+                <strong>{s.model}</strong> {s.signal} ({hitRates.agents[s.model] ?? 0}%)
+                <div style={{ color: 'var(--muted)', fontSize: 12 }}>{s.reasons.join(' · ')}</div>
+              </div>
+            ))}
+          </>}
         </div>
 
         <div className="glass" style={styles.card}>
-          <h3>Trade Tape (20)</h3>
-          {tradeTape.map((t) => <div key={t.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}><span>{new Date(t.time).toLocaleTimeString()}</span><span>{t.side}</span><span>${t.sizeUsd.toFixed(0)}</span></div>)}
+          <button style={styles.toggle} onClick={() => setCollapsed((v) => ({ ...v, tape: !v.tape }))}><h3>Trade Tape (20)</h3></button>
+          {!collapsed.tape && tradeTape.map((t) => <div key={t.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}><span>{new Date(t.time).toLocaleTimeString()}</span><span>{t.side}</span><span>${t.sizeUsd.toFixed(0)}</span></div>)}
         </div>
 
         <div className="glass" style={styles.card}>
-          <h3>Activity Feed</h3>
-          {events.slice(0, 20).map((e) => <div key={e.id} style={{ borderTop: '1px solid var(--border)', paddingTop: 6, marginTop: 6, fontSize: 12 }}><strong>{e.eventType}</strong> · {e.actorRole}<div style={{ color: 'var(--muted)' }}>{new Date(e.createdAt).toLocaleString()}</div></div>)}
+          <button style={styles.toggle} onClick={() => setCollapsed((v) => ({ ...v, activity: !v.activity }))}><h3>Activity Feed</h3></button>
+          {!collapsed.activity && events.slice(0, 20).map((e) => <div key={e.id} style={{ borderTop: '1px solid var(--border)', paddingTop: 6, marginTop: 6, fontSize: 12 }}><strong>{e.eventType}</strong> · {e.actorRole}<div style={{ color: 'var(--muted)' }}>{new Date(e.createdAt).toLocaleString()}</div></div>)}
         </div>
       </div>
     </div>
@@ -244,6 +336,7 @@ export default function DashboardPage() {
 const styles: Record<string, CSSProperties> = {
   page: { maxWidth: 1200, margin: '0 auto', padding: '1rem', display: 'flex', flexDirection: 'column', gap: 10 },
   row: { display: 'flex', gap: 16, padding: 12 },
+  controls: { display: 'flex', gap: 10, marginBottom: 8 },
   tradeGrid: { display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))' },
   panels: { display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit,minmax(280px,1fr))' },
   card: { padding: 12 },
@@ -251,4 +344,5 @@ const styles: Record<string, CSSProperties> = {
   quickRow: { display: 'flex', gap: 6, marginTop: 6, marginBottom: 8 },
   quickBtn: { border: '1px solid var(--border)', borderRadius: 8, padding: '6px 9px', background: 'transparent', color: 'var(--text)' },
   button: { width: '100%', border: 'none', borderRadius: 10, padding: '0.8rem', fontWeight: 700, color: '#fff' },
+  toggle: { width: '100%', textAlign: 'left', border: 'none', background: 'transparent', color: 'inherit', cursor: 'pointer' },
 };

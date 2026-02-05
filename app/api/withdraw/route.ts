@@ -24,15 +24,14 @@ export async function POST(req: NextRequest) {
   }
 
   const request = await prisma.withdrawalRequest.create({
-    data: { amount: parsed.data.amount },
+    data: { amount: parsed.data.amount, status: 'PENDING' },
   });
 
-  await prisma.wallet.update({
-    where: { id: wallet.id },
-    data: { cashBalance: wallet.cashBalance - parsed.data.amount },
+  await logAuditEvent('withdrawal_requested', 'USER', {
+    withdrawalId: request.id,
+    amount: parsed.data.amount,
+    status: request.status,
   });
-
-  await logAuditEvent('withdrawal_created', 'USER', { withdrawalId: request.id, amount: parsed.data.amount, status: request.status });
 
   return NextResponse.json({ request });
 }

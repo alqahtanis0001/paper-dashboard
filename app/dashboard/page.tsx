@@ -140,6 +140,12 @@ export default function DashboardPage() {
     return () => clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    if (wallet && buyAmount === '') {
+      setBuyAmount((wallet.cashBalance * 0.25).toFixed(2));
+    }
+  }, [wallet, buyAmount]);
+
   const act = async (side: 'BUY' | 'SELL', payload?: Record<string, unknown>) => {
     const aiNote = meta.action !== side && meta.action !== 'WAIT' ? `AI consensus prefers ${meta.action}. Proceeded with your ${side}.` : '';
     const endpoint = side === 'BUY' ? '/api/trade/buy' : '/api/trade/sell';
@@ -157,6 +163,37 @@ export default function DashboardPage() {
     const body = await res.json().catch(() => ({}));
     setWarning(body.error ?? 'Trade failed');
     return false;
+  };
+
+  const applyBuyPercent = (pct: number) => {
+    if (!wallet) return;
+    const amount = wallet.cashBalance * pct;
+    setBuyAmount(amount.toFixed(2));
+  };
+
+  const handleBuy = async () => {
+    setWarning('');
+    const amt = Number(buyAmount);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      setWarning('Enter a valid buy amount');
+      return;
+    }
+    if (wallet && amt > wallet.cashBalance) {
+      setWarning('Amount exceeds cash balance');
+      return;
+    }
+    await act('BUY', { amountUsd: amt });
+  };
+
+  const handleSell = async (pct?: number) => {
+    const targetPct = pct ?? sellPercent;
+    setSellPercent(targetPct);
+    setWarning('');
+    if (!Number.isFinite(targetPct) || targetPct <= 0 || targetPct > 100) {
+      setWarning('Choose a percent between 0 and 100');
+      return;
+    }
+    await act('SELL', { sellPercent: targetPct });
   };
 
   return (
@@ -266,13 +303,58 @@ export default function DashboardPage() {
           <div style={{ fontSize: 28, fontWeight: 800 }}>{meta.action}</div>
           <div style={{ color: 'var(--muted)' }}>{meta.confidence}% agreement</div>
         </div>
-        <div style={{ display: 'flex', gap: 12 }}>
-          <button style={{ ...styles.tradeBtn, background: '#ff5c8d' }} onClick={() => act('BUY')}>
-            BUY
-          </button>
-          <button style={{ ...styles.tradeBtn, background: '#3cff8d', color: '#041013' }} onClick={() => act('SELL')}>
-            SELL
-          </button>
+        <div style={styles.tradeColumns}>
+          <div className="glass" style={styles.tradeCard}>
+            <div style={styles.tradeCardHeader}>
+              <div style={{ fontWeight: 700 }}>Buy</div>
+              <div style={styles.tradeHint}>Cash ${wallet?.cashBalance?.toFixed(2) ?? '--'}</div>
+            </div>
+            <div style={styles.inputRow}>
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                placeholder="Amount USD"
+                value={buyAmount}
+                onChange={(e) => setBuyAmount(e.target.value)}
+                style={styles.input}
+              />
+              <button style={{ ...styles.tradeBtn, background: '#ff5c8d', minWidth: 120 }} onClick={handleBuy}>
+                Deploy
+              </button>
+            </div>
+            <div style={styles.quickRow}>
+              {[0.25, 0.5, 1].map((pct) => (
+                <button key={pct} style={styles.quickBtn} onClick={() => applyBuyPercent(pct)}>
+                  {pct * 100}% of cash
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="glass" style={styles.tradeCard}>
+            <div style={styles.tradeCardHeader}>
+              <div style={{ fontWeight: 700 }}>Sell</div>
+              <div style={styles.tradeHint}>Open size ${position?.sizeUsd?.toFixed(0) ?? '--'}</div>
+            </div>
+            <div style={styles.quickRow}>
+              {[25, 50, 100].map((pct) => (
+                <button
+                  key={pct}
+                  style={{
+                    ...styles.quickBtn,
+                    borderColor: sellPercent === pct ? '#3cff8d' : 'var(--border)',
+                    background: sellPercent === pct ? '#1b253a' : 'transparent',
+                  }}
+                  onClick={() => setSellPercent(pct)}
+                >
+                  {pct}%
+                </button>
+              ))}
+            </div>
+            <button style={{ ...styles.tradeBtn, background: '#3cff8d', color: '#041013', width: '100%' }} onClick={() => handleSell()}>
+              Sell {sellPercent}%
+            </button>
+          </div>
         </div>
       </div>
       {warning && <div style={{ color: '#ffb347', marginTop: -6 }}>{warning}</div>}
@@ -328,8 +410,31 @@ const styles: Record<string, CSSProperties> = {
   chartCard: { padding: '1rem', width: '100%' },
   aiRow: { display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))' },
   aiCard: { padding: '0.8rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
-  metaCardRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  metaCardRow: { display: 'flex', alignItems: 'stretch', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' },
   metaCard: { padding: '1rem 1.2rem', minWidth: 200 },
+  tradeColumns: { display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))', flex: 1 },
+  tradeCard: { padding: '0.9rem', display: 'flex', flexDirection: 'column', gap: 10 },
+  tradeCardHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
+  tradeHint: { color: 'var(--muted)', fontSize: 12 },
+  inputRow: { display: 'flex', gap: 10, alignItems: 'center' },
+  input: {
+    flex: 1,
+    padding: '0.65rem 0.75rem',
+    borderRadius: 10,
+    border: '1px solid var(--border)',
+    background: '#0f172b',
+    color: 'var(--text)',
+  },
+  quickRow: { display: 'flex', gap: 8, flexWrap: 'wrap' },
+  quickBtn: {
+    border: '1px solid var(--border)',
+    background: 'transparent',
+    color: 'var(--text)',
+    borderRadius: 10,
+    padding: '6px 10px',
+    cursor: 'pointer',
+    fontSize: 12,
+  },
   tradeBtn: {
     padding: '0.9rem 1.4rem',
     border: 'none',

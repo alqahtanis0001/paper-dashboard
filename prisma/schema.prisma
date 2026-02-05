@@ -57,17 +57,21 @@ model Position {
 }
 
 model Trade {
-  id       String    @id @default(uuid())
-  time     DateTime  @default(now())
-  symbol   String
-  side     TradeSide
-  price    Float
-  sizeUsd  Float
-  pnl      Float?
-  walletId String?
-  wallet   Wallet?   @relation(fields: [walletId], references: [id])
-  dealId   String?
-  deal     Deal?     @relation(fields: [dealId], references: [id])
+  id               String    @id @default(uuid())
+  time             DateTime  @default(now())
+  symbol           String
+  side             TradeSide
+  price            Float
+  sizeUsd          Float
+  pnl              Float?
+  walletId         String?
+  wallet           Wallet?   @relation(fields: [walletId], references: [id])
+  dealId           String?
+  deal             Deal?     @relation(fields: [dealId], references: [id])
+  fillPrice        Float
+  feeUsd           Float
+  slippageUsd      Float
+  latencyMs        Int
 }
 
 model Deal {

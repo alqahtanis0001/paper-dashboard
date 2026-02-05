@@ -3,6 +3,7 @@ import { requireUserSession } from '@/lib/auth';
 import { getWallet } from '@/lib/wallet';
 import { prisma } from '@/lib/prisma';
 import { dealEngine } from '@/lib/engine/dealEngine';
+import { simulateExecution } from '@/lib/execution';
 
 export async function POST(req: NextRequest) {
   try {
@@ -13,7 +14,7 @@ export async function POST(req: NextRequest) {
 
   const wallet = await getWallet();
 
-  const { amountUsd } = await req.json().catch(() => ({}));
+  const { amountUsd, midPrice, regimeVolatility } = await req.json().catch(() => ({}));
   if (typeof amountUsd !== 'number' || Number.isNaN(amountUsd) || !Number.isFinite(amountUsd)) {
     return NextResponse.json({ error: 'amountUsd must be a number' }, { status: 400 });
   }
@@ -30,6 +31,8 @@ export async function POST(req: NextRequest) {
   if (wallet.cashBalance < amountUsd) {
     return NextResponse.json({ error: 'Insufficient balance' }, { status: 400 });
   }
+
+  const { fillPrice, feeUsd, slippageUsd, latencyMs } = simulateExecution(midPrice, 'buy', regimeVolatility);
 
   try {
     const result = await prisma.$transaction(async (tx) => {
@@ -49,7 +52,7 @@ export async function POST(req: NextRequest) {
         data: {
           symbol: position.symbol,
           side: 'BUY',
-          price,
+          price: fillPrice,
           sizeUsd: amountUsd,
           walletId: wallet.id,
           dealId: activeDealId ?? undefined,

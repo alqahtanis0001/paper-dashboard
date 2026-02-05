@@ -74,6 +74,22 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
+    const pingWebsite = () => {
+      void fetch('/api/ping', {
+        method: 'GET',
+        cache: 'no-store',
+        keepalive: true,
+      }).catch(() => {
+        // Keep-alive ping failure should never interrupt dashboard interaction.
+      });
+    };
+
+    pingWebsite();
+    const pingInterval = setInterval(pingWebsite, 8 * 60 * 1000);
+    return () => clearInterval(pingInterval);
+  }, []);
+
+  useEffect(() => {
     const setup = async () => {
       const { createChart } = await import('lightweight-charts');
       if (!chartRef.current) return;

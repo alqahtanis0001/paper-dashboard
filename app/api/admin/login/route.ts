@@ -9,6 +9,14 @@ const bodySchema = z.object({ passkey: z.string().min(1) });
 
 const DEFAULT_ADMIN_PASSKEY = 'admin-pass-456';
 
+function normalizePasskey(passkey: string) {
+  const trimmed = passkey.trim();
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
 export async function POST(req: Request) {
   logServerAction('auth.admin.login', 'start');
   const ipHash = hashIp(getClientIp(req.headers));
@@ -25,8 +33,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Invalid payload' }, { status: 400 });
   }
 
-  const configuredPasskey = process.env.ADMIN_PASSKEY?.trim() || DEFAULT_ADMIN_PASSKEY;
-  const success = parsed.data.passkey.trim() === configuredPasskey;
+  const configuredPasskey = normalizePasskey(process.env.ADMIN_PASSKEY || DEFAULT_ADMIN_PASSKEY);
+  const success = normalizePasskey(parsed.data.passkey) === configuredPasskey;
   await recordLoginAttempt(ipHash, 'ADMIN', success);
 
   if (!success) {

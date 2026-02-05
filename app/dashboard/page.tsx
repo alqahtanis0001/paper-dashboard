@@ -38,6 +38,8 @@ export default function DashboardPage() {
   const [fatalError, setFatalError] = useState<string | null>(null);
   const [hasChartData, setHasChartData] = useState(false);
   const [scanTicker, setScanTicker] = useState('BTC/USDT · Solana · AVAX');
+  const [buyAmount, setBuyAmount] = useState('');
+  const [sellPercent, setSellPercent] = useState(100);
 
   const pushPrice = (payload: { candle: { time: number; open: number; high: number; low: number; close: number } }) => {
     if (!candleSeries.current) return;
@@ -138,19 +140,23 @@ export default function DashboardPage() {
     return () => clearInterval(id);
   }, []);
 
-  const act = async (side: 'BUY' | 'SELL') => {
-    setWarning('');
-    if (meta.action !== side && meta.action !== 'WAIT') {
-      setWarning(`AI consensus prefers ${meta.action}. Proceeded with your ${side}.`);
-    }
+  const act = async (side: 'BUY' | 'SELL', payload?: Record<string, unknown>) => {
+    const aiNote = meta.action !== side && meta.action !== 'WAIT' ? `AI consensus prefers ${meta.action}. Proceeded with your ${side}.` : '';
     const endpoint = side === 'BUY' ? '/api/trade/buy' : '/api/trade/sell';
-    const res = await fetch(endpoint, { method: 'POST' });
+    const res = await fetch(endpoint, {
+      method: 'POST',
+      headers: payload ? { 'Content-Type': 'application/json' } : undefined,
+      body: payload ? JSON.stringify(payload) : undefined,
+    });
     if (res.ok) {
+      if (aiNote) setWarning(aiNote);
+      else setWarning('');
       fetchWallet();
-    } else {
-      const body = await res.json().catch(() => ({}));
-      setWarning(body.error ?? 'Trade failed');
+      return true;
     }
+    const body = await res.json().catch(() => ({}));
+    setWarning(body.error ?? 'Trade failed');
+    return false;
   };
 
   return (

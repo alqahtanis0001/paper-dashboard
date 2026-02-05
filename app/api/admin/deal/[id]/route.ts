@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAdminSession } from '@/lib/auth';
+import { authErrorResponse, requireAdminSession } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { z } from 'zod';
+import { logAuditEvent } from '@/lib/audit';
 
 const jumpSchema = z.object({
   id: z.string().uuid().optional(),
@@ -27,8 +28,8 @@ export async function PUT(req: NextRequest, context: { params: Promise<{ id: str
   const params = await context.params;
   try {
     await requireAdminSession(req);
-  } catch {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  } catch (error) {
+    return authErrorResponse(error);
   }
   const data = await req.json().catch(() => null);
   const parsed = bodySchema.safeParse(data);
@@ -61,6 +62,7 @@ export async function PUT(req: NextRequest, context: { params: Promise<{ id: str
   }
 
   const updated = await prisma.deal.findUnique({ where: { id: params.id }, include: { jumps: true } });
+  await logAuditEvent('deal_updated', 'ADMIN', { dealId: params.id });
   return NextResponse.json({ deal: updated });
 }
 
@@ -68,9 +70,10 @@ export async function DELETE(req: NextRequest, context: { params: Promise<{ id: 
   const params = await context.params;
   try {
     await requireAdminSession(req);
-  } catch {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  } catch (error) {
+    return authErrorResponse(error);
   }
   await prisma.deal.delete({ where: { id: params.id } }).catch(() => null);
+  await logAuditEvent('deal_deleted', 'ADMIN', { dealId: params.id });
   return NextResponse.json({ ok: true });
 }

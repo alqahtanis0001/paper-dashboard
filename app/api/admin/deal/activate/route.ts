@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAdminSession } from '@/lib/auth';
+import { authErrorResponse, requireAdminSession } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { z } from 'zod';
+import { logAuditEvent } from '@/lib/audit';
 
 const bodySchema = z.object({
   id: z.string().uuid(),
@@ -11,8 +12,8 @@ const bodySchema = z.object({
 export async function POST(req: NextRequest) {
   try {
     await requireAdminSession(req);
-  } catch {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  } catch (error) {
+    return authErrorResponse(error);
   }
   const data = await req.json().catch(() => null);
   const parsed = bodySchema.safeParse(data);
@@ -29,5 +30,6 @@ export async function POST(req: NextRequest) {
     include: { jumps: { orderBy: { orderIndex: 'asc' } } },
   });
 
+  await logAuditEvent('deal_activated', 'ADMIN', { dealId: deal.id, startNow: !!parsed.data.startNow });
   return NextResponse.json({ deal });
 }

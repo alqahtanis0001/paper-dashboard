@@ -1,7 +1,17 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState, CSSProperties } from 'react';
-import type { IChartApi, ISeriesApi, CandlestickData, HistogramData, LineData, Time, UTCTimestamp } from 'lightweight-charts';
+import type {
+  IChartApi,
+  ISeriesApi,
+  CandlestickData,
+  HistogramData,
+  LineData,
+  Time,
+  UTCTimestamp,
+  ISeriesMarkersPluginApi,
+  SeriesMarker,
+} from 'lightweight-charts';
 import io from 'socket.io-client';
 
 type Wallet = { cashBalance: number; equity: number; liveEquity?: number; positionValue?: number; unrealizedPnl?: number; pnlTotal: number };
@@ -48,6 +58,7 @@ export default function DashboardPage() {
   const chartRef = useRef<HTMLDivElement>(null);
   const chartApi = useRef<IChartApi | null>(null);
   const candleSeries = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const markersApi = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
   const volumeSeries = useRef<ISeriesApi<'Histogram'> | null>(null);
   const ema20Series = useRef<ISeriesApi<'Line'> | null>(null);
   const ema50Series = useRef<ISeriesApi<'Line'> | null>(null);
@@ -143,7 +154,7 @@ export default function DashboardPage() {
   useEffect(() => {
     let disconnect: (() => void) | undefined;
     const setup = async () => {
-      const { createChart, CandlestickSeries, HistogramSeries, LineSeries } = await import('lightweight-charts');
+      const { createChart, CandlestickSeries, HistogramSeries, LineSeries, createSeriesMarkers } = await import('lightweight-charts');
       if (!chartRef.current) return;
 
       const chart = createChart(chartRef.current, {
@@ -156,6 +167,7 @@ export default function DashboardPage() {
       });
       chartApi.current = chart;
       candleSeries.current = chart.addSeries(CandlestickSeries, { upColor: '#3cff8d', downColor: '#ff5c8d', wickUpColor: '#3cff8d', wickDownColor: '#ff5c8d', borderVisible: false });
+      markersApi.current = createSeriesMarkers(candleSeries.current, []);
       volumeSeries.current = chart.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceScaleId: '' });
       volumeSeries.current.priceScale().applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
       ema20Series.current = chart.addSeries(LineSeries, { color: '#ffd166', lineWidth: 1 });
@@ -212,6 +224,7 @@ export default function DashboardPage() {
 
       disconnect = () => {
         socket.disconnect();
+        markersApi.current = null;
         chart.remove();
       };
     };
@@ -222,7 +235,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!candleSeries.current) return;
-    const markers = trades.slice(0, 30).map((t) => {
+    const markers: SeriesMarker<Time>[] = trades.slice(0, 30).map((t) => {
       const eventSec = Math.floor(new Date(t.time).getTime() / 1000);
       const candleTime = nearestCandleTime(candlesRef.current, eventSec);
       return {
@@ -233,7 +246,7 @@ export default function DashboardPage() {
         text: `${t.side} $${t.sizeUsd.toFixed(2)} @ ${(t.fillPrice ?? t.price).toFixed(2)} · fee ${(t.feeUsd ?? 0).toFixed(2)} · slip ${(t.slippageUsd ?? 0).toFixed(2)} · ${(t.latencyMs ?? 0)}ms · ${new Date(t.time).toLocaleTimeString()}`,
       };
     });
-    (candleSeries.current as unknown as { setMarkers: (m: unknown[]) => void }).setMarkers(markers);
+    markersApi.current?.setMarkers(markers);
   }, [trades]);
 
   useEffect(() => {

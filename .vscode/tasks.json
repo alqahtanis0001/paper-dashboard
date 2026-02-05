@@ -1,0 +1,31 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "paper:db:ensure",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "-lc",
+        "docker start paper-pg >/dev/null 2>&1 || docker run --name paper-pg -e POSTGRES_USER=paper_user -e POSTGRES_PASSWORD=paper_pass_789 -e POSTGRES_DB=paper_trading -p 5432:5432 -d postgres:16 >/dev/null; until docker exec paper-pg pg_isready -U paper_user -d paper_trading >/dev/null 2>&1; do sleep 1; done"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "paper:prisma:sync",
+      "type": "shell",
+      "dependsOn": [
+        "paper:db:ensure"
+      ],
+      "dependsOrder": "sequence",
+      "command": "npx prisma db push",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "DATABASE_URL": "postgresql://paper_user:paper_pass_789@127.0.0.1:5432/paper_trading?schema=public"
+        }
+      },
+      "problemMatcher": []
+    }
+  ]
+}

@@ -7,16 +7,44 @@
       "request": "launch",
       "command": "npm run dev",
       "cwd": "${workspaceFolder}",
-      "envFile": "${workspaceFolder}/.env.local"
+      "envFile": "${workspaceFolder}/.env.local",
+      "env": {
+        "DATABASE_URL": "postgresql://paper_user:paper_pass_789@127.0.0.1:5432/paper_trading?schema=public",
+        "USER_PASSKEY": "user-pass-123",
+        "ADMIN_PASSKEY": "admin-pass-456",
+        "LOGIN_LOCKOUT_THRESHOLD": "10",
+        "LOGIN_LOCKOUT_WINDOW_MS": "300000"
+      }
+    },
+    {
+      "name": "Paper Dashboard: Dev (Auto DB + Prisma Sync)",
+      "type": "node-terminal",
+      "request": "launch",
+      "preLaunchTask": "paper:prisma:sync",
+      "command": "npm run dev",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env.local",
+      "env": {
+        "DATABASE_URL": "postgresql://paper_user:paper_pass_789@127.0.0.1:5432/paper_trading?schema=public",
+        "USER_PASSKEY": "user-pass-123",
+        "ADMIN_PASSKEY": "admin-pass-456",
+        "LOGIN_LOCKOUT_THRESHOLD": "10",
+        "LOGIN_LOCKOUT_WINDOW_MS": "300000"
+      }
     },
     {
       "name": "Paper Dashboard: Render-like Start",
       "type": "node-terminal",
       "request": "launch",
-      "command": "npm run start -- -p ${env:PORT}",
+      "command": "npm run start -- -p $PORT",
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env.local",
       "env": {
+        "DATABASE_URL": "postgresql://paper_user:paper_pass_789@127.0.0.1:5432/paper_trading?schema=public",
+        "USER_PASSKEY": "user-pass-123",
+        "ADMIN_PASSKEY": "admin-pass-456",
+        "LOGIN_LOCKOUT_THRESHOLD": "10",
+        "LOGIN_LOCKOUT_WINDOW_MS": "300000",
         "NODE_ENV": "production",
         "PORT": "3000"
       }

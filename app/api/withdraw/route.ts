@@ -1,16 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireUserSession } from '@/lib/auth';
+import { authErrorResponse, requireUserSession } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { getWallet } from '@/lib/wallet';
 import { z } from 'zod';
+import { logAuditEvent } from '@/lib/audit';
 
 const bodySchema = z.object({ amount: z.number().positive() });
 
 export async function POST(req: NextRequest) {
   try {
     await requireUserSession(req);
-  } catch {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  } catch (error) {
+    return authErrorResponse(error);
   }
 
   const data = await req.json().catch(() => null);
@@ -30,6 +31,8 @@ export async function POST(req: NextRequest) {
     where: { id: wallet.id },
     data: { cashBalance: wallet.cashBalance - parsed.data.amount },
   });
+
+  await logAuditEvent('withdrawal_created', 'USER', { withdrawalId: request.id, amount: parsed.data.amount, status: request.status });
 
   return NextResponse.json({ request });
 }

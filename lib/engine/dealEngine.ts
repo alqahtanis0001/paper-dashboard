@@ -39,6 +39,9 @@ class DealEngine {
   private regime: RegimeState | null = null;
   private nextRegimeSwitch = 0;
   private lastTickAt = 0;
+  private signalOutcomes: { id: string; time: number; price: number; action: 'BUY' | 'SELL' }[] = [];
+  private hitRateByModel: Record<string, { wins: number; total: number }> = {};
+  private metaHitRate = { wins: 0, total: 0 };
 
   constructor() {
     this.startWatcher();
@@ -67,11 +70,11 @@ class DealEngine {
         await prisma.deal.update({ where: { id: deal.id }, data: { status: 'RUNNING' } });
         this.runDeal(deal);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       // If tables are not ready (P2021) or connection issue, skip and retry on next tick
-      const code = err?.code;
+      const code = err && typeof err === "object" && "code" in err ? (err as { code?: string }).code : undefined;
       if (process.env.NODE_ENV !== 'production') {
-        console.warn('[DealEngine] checkDeals skipped due to error:', code ?? err?.message ?? err);
+        console.warn('[DealEngine] checkDeals skipped due to error:', code ?? (err instanceof Error ? err.message : err));
       }
     }
   }
@@ -276,26 +279,73 @@ class DealEngine {
     io?.emit('price_tick', { timestamp: now, price, candle: this.candles[this.candles.length - 1], regime: regime.kind });
   }
 
-  private emitSignals(deal: Deal & { jumps: DealJump[] }) {
+  private async settleSignalOutcomes(currentPrice: number) {
+    const horizonMs = 60_000;
+    const now = Date.now();
+    const matured = this.signalOutcomes.filter((s) => now - s.time >= horizonMs);
+    this.signalOutcomes = this.signalOutcomes.filter((s) => now - s.time < horizonMs);
+    for (const sig of matured) {
+      const outcomePct = ((currentPrice - sig.price) / sig.price) * 100;
+      const metaCorrect = sig.action === 'BUY' ? outcomePct > 0 : outcomePct < 0;
+      this.metaHitRate.total += 1;
+      if (metaCorrect) this.metaHitRate.wins += 1;
+      await prisma.aiSignalLog.update({
+        where: { id: sig.id },
+        data: {
+          resolvedAt: new Date(),
+          outcomePct,
+          metaCorrect,
+          hitRatesJson: {
+            meta: this.metaHitRate.total ? Math.round((this.metaHitRate.wins / this.metaHitRate.total) * 100) : 0,
+            agents: Object.fromEntries(
+              Object.entries(this.hitRateByModel).map(([k, v]) => [k, v.total ? Math.round((v.wins / v.total) * 100) : 0])
+            ),
+          },
+        },
+      }).catch(() => null);
+    }
+  }
+
+  private async emitSignals(deal: Deal & { jumps: DealJump[] }) {
     const prices = this.candles.map((c) => c.close);
     if (prices.length < 5) return;
     const signals = buildSignals(prices, this.candles.map((c) => c.volume));
     const meta = aggregateSignals(signals);
 
+    for (const signal of signals) {
+      if (!this.hitRateByModel[signal.model]) this.hitRateByModel[signal.model] = { wins: 0, total: 0 };
+      const last2 = prices.slice(-2);
+      if (last2.length === 2 && signal.signal !== 'OFF') {
+        const delta = last2[1] - last2[0];
+        this.hitRateByModel[signal.model].total += 1;
+        if ((signal.signal === 'BUY' && delta > 0) || (signal.signal === 'SELL' && delta < 0)) this.hitRateByModel[signal.model].wins += 1;
+      }
+    }
+
     const io = getIO();
-    io?.emit('ai_signals', { signals, meta });
+    io?.emit('ai_signals', {
+      signals,
+      meta,
+      hitRates: {
+        meta: this.metaHitRate.total ? Math.round((this.metaHitRate.wins / this.metaHitRate.total) * 100) : 0,
+        agents: Object.fromEntries(Object.entries(this.hitRateByModel).map(([k, v]) => [k, v.total ? Math.round((v.wins / v.total) * 100) : 0])),
+      },
+    });
     io?.emit('deal_state', { status: 'RUNNING', dealId: deal.id });
 
-    // Optionally persist logs
-    prisma.aiSignalLog
-      .create({
-        data: {
-          dealId: deal.id,
-          signalsJson: signals as unknown as object,
-          metaDecisionJson: meta as unknown as object,
-        },
-      })
-      .catch(() => null);
+    const created = await prisma.aiSignalLog.create({
+      data: {
+        dealId: deal.id,
+        signalsJson: signals as unknown as object,
+        metaDecisionJson: meta as unknown as object,
+      },
+    }).catch(() => null);
+
+    if (created && (meta.action === 'BUY' || meta.action === 'SELL')) {
+      this.signalOutcomes.push({ id: created.id, time: Date.now(), price: prices[prices.length - 1], action: meta.action });
+    }
+
+    await this.settleSignalOutcomes(prices[prices.length - 1]);
   }
 
   private async finishDeal() {

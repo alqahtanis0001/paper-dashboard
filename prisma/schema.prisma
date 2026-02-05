@@ -24,12 +24,60 @@ enum TradeSide {
   SELL
 }
 
+enum Role {
+  USER
+  ADMIN
+}
+
+enum LoginAttemptRole {
+  USER
+  ADMIN
+}
+
 model AuthSession {
   id           String   @id @default(uuid())
   createdAt    DateTime @default(now())
   expiresAt    DateTime
+  lastSeenAt   DateTime @default(now())
+  revokedAt    DateTime?
   sessionToken String   @unique
+  role         Role     @default(USER)
   isAdmin      Boolean  @default(false)
+
+  chartPreference ChartPreference?
+}
+
+model LoginAttempt {
+  id            String           @id @default(uuid())
+  ipHash        String
+  roleAttempted LoginAttemptRole
+  success       Boolean
+  createdAt     DateTime         @default(now())
+
+  @@index([ipHash, roleAttempted, createdAt])
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  eventType String
+  actorRole Role
+  createdAt DateTime @default(now())
+  metadata  Json
+
+  @@index([createdAt])
+}
+
+model ChartPreference {
+  id            String      @id @default(uuid())
+  sessionId      String      @unique
+  selectedSymbol String?
+  timeframe      String?
+  zoomLogical    Float?
+  collapsedJson  Json?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  session AuthSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 }
 
 model Wallet {
@@ -44,38 +92,38 @@ model Wallet {
 }
 
 model Position {
-  id          String    @id @default(uuid())
-  isOpen      Boolean   @default(false)
-  symbol      String
-  entryPrice  Float?
-  entryTime   DateTime?
-  sizeUsd     Float?
-  walletId    String?
-  wallet      Wallet?   @relation(fields: [walletId], references: [id])
-  metaDealId  String?
-  metaDeal    Deal?     @relation(fields: [metaDealId], references: [id])
+  id         String   @id @default(uuid())
+  isOpen     Boolean  @default(false)
+  symbol     String
+  entryPrice Float?
+  entryTime  DateTime?
+  sizeUsd    Float?
+  walletId   String?
+  wallet     Wallet?  @relation(fields: [walletId], references: [id])
+  metaDealId String?
+  metaDeal   Deal?    @relation(fields: [metaDealId], references: [id])
 }
 
 model Trade {
-  id               String    @id @default(uuid())
-  time             DateTime  @default(now())
-  symbol           String
-  side             TradeSide
-  price            Float
-  sizeUsd          Float
-  pnl              Float?
-  walletId         String?
-  wallet           Wallet?   @relation(fields: [walletId], references: [id])
-  dealId           String?
-  deal             Deal?     @relation(fields: [dealId], references: [id])
-  fillPrice        Float
-  feeUsd           Float
-  slippageUsd      Float
-  latencyMs        Int
+  id          String    @id @default(uuid())
+  time        DateTime  @default(now())
+  symbol      String
+  side        TradeSide
+  price       Float
+  sizeUsd     Float
+  pnl         Float?
+  walletId    String?
+  wallet      Wallet?   @relation(fields: [walletId], references: [id])
+  dealId      String?
+  deal        Deal?     @relation(fields: [dealId], references: [id])
+  fillPrice   Float
+  feeUsd      Float
+  slippageUsd Float
+  latencyMs   Int
 }
 
 model Deal {
-  id               String      @id @default(uuid())
+  id               String     @id @default(uuid())
   symbol           String
   chainName        String
   basePrice        Float
@@ -83,19 +131,19 @@ model Deal {
   totalDurationSec Int
   dropDelaySec     Int
   dropMagnitudePct Float
-  createdAt        DateTime    @default(now())
-  status           DealStatus  @default(SCHEDULED)
+  createdAt        DateTime   @default(now())
+  status           DealStatus @default(SCHEDULED)
 
-  jumps    DealJump[]
-  trades   Trade[]
-  signals  AiSignalLog[]
+  jumps     DealJump[]
+  trades    Trade[]
+  signals   AiSignalLog[]
   positions Position[]
 }
 
 model DealJump {
-  id               String   @id @default(uuid())
+  id               String @id @default(uuid())
   dealId           String
-  deal             Deal     @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  deal             Deal   @relation(fields: [dealId], references: [id], onDelete: Cascade)
   riseDelaySec     Int
   riseMagnitudePct Float
   holdSec          Int
@@ -103,17 +151,22 @@ model DealJump {
 }
 
 model WithdrawalRequest {
-  id     String            @id @default(uuid())
-  time   DateTime          @default(now())
+  id     String           @id @default(uuid())
+  time   DateTime         @default(now())
   amount Float
-  status WithdrawalStatus  @default(PENDING)
+  status WithdrawalStatus @default(PENDING)
 }
 
 model AiSignalLog {
-  id               String   @id @default(uuid())
-  time             DateTime @default(now())
+  id               String    @id @default(uuid())
+  time             DateTime  @default(now())
   dealId           String?
-  deal             Deal?    @relation(fields: [dealId], references: [id], onDelete: SetNull)
+  deal             Deal?     @relation(fields: [dealId], references: [id], onDelete: SetNull)
   signalsJson      Json
   metaDecisionJson Json
+  horizonSec       Int       @default(60)
+  resolvedAt       DateTime?
+  outcomePct       Float?
+  metaCorrect      Boolean?
+  hitRatesJson     Json?
 }

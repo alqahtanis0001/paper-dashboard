@@ -36,7 +36,9 @@ type Trade = {
   slippageUsd?: number;
   latencyMs?: number;
 };
-type ModelSignal = { model: string; signal: 'BUY' | 'SELL' | 'OFF'; confidence: number; reasons: string[] };
+type SignalState = 'BUY' | 'SELL' | 'NO_TRADE';
+type RawSignalState = SignalState | 'OFF';
+type ModelSignal = { model: string; signal: RawSignalState; confidence: number; reasons: string[] };
 type Meta = { action: 'BUY' | 'SELL' | 'NO_TRADE'; confidence: number; reason: string };
 type ActivityEvent = { id: string; eventType: string; actorRole: string; createdAt: string; metadata: Record<string, unknown> };
 
@@ -123,6 +125,14 @@ const nearestCandleTime = (candles: CandlestickData<Time>[], tsSec: number) => {
     }
   }
   return nearest as UTCTimestamp;
+};
+
+const normalizeSignalState = (signal: RawSignalState): SignalState => (signal === 'OFF' ? 'NO_TRADE' : signal);
+
+const signalLightClassName = (signal: SignalState) => {
+  if (signal === 'BUY') return 'status-light status-light-buy';
+  if (signal === 'SELL') return 'status-light status-light-sell';
+  return 'status-light status-light-neutral';
 };
 
 export default function DashboardPage() {
@@ -531,7 +541,7 @@ export default function DashboardPage() {
         <div style={{ color: (wallet?.pnlTotal ?? 0) >= 0 ? '#3cff8d' : '#ff5c8d' }}>PnL ${wallet?.pnlTotal.toFixed(2) ?? '--'}</div>
       </div>
 
-      <div className="glass" style={{ padding: 12 }}>
+      <div className="glass" style={styles.chartShell}>
         <div style={styles.controls}>
           <select value={selectedSymbol} onChange={(e) => setSelectedSymbol(normalizeGraphMode(e.target.value))} style={styles.input}>
             {GRAPH_MODES.map((symbol) => (
@@ -577,10 +587,21 @@ export default function DashboardPage() {
         <div className="glass" style={styles.card}>
           <button style={styles.toggle} onClick={() => setCollapsed((v) => ({ ...v, ai: !v.ai }))}><h3>AI Feed</h3></button>
           {!collapsed.ai && <>
-            <div>Meta: {meta.action} ({meta.confidence}%) · hit {hitRates.meta}%</div>
+            <div style={styles.signalRow}>
+              <span className={signalLightClassName(meta.action)} />
+              <strong>Meta</strong>
+              <span>{meta.action}</span>
+              <span style={styles.signalStats}>({meta.confidence}% · hit {hitRates.meta}%)</span>
+            </div>
+            <div style={styles.signalReason}>{meta.reason}</div>
             {signals.map((s) => (
               <div key={s.model} style={{ marginTop: 8 }}>
-                <strong>{s.model}</strong> {s.signal} ({hitRates.agents[s.model] ?? 0}%)
+                <div style={styles.signalRow}>
+                  <span className={signalLightClassName(normalizeSignalState(s.signal))} />
+                  <strong>{s.model}</strong>
+                  <span>{normalizeSignalState(s.signal)}</span>
+                  <span style={styles.signalStats}>({s.confidence}% · hit {hitRates.agents[s.model] ?? 0}%)</span>
+                </div>
                 <div style={{ color: 'var(--muted)', fontSize: 12 }}>{s.reasons.join(' · ')}</div>
               </div>
             ))}
@@ -604,6 +625,12 @@ export default function DashboardPage() {
 const styles: Record<string, CSSProperties> = {
   page: { maxWidth: 1200, margin: '0 auto', padding: '1rem', display: 'flex', flexDirection: 'column', gap: 10 },
   row: { display: 'flex', gap: 16, padding: 12 },
+  chartShell: {
+    padding: 12,
+    position: 'relative',
+    overflow: 'hidden',
+    isolation: 'isolate',
+  },
   controls: { display: 'flex', gap: 10, marginBottom: 8 },
   legendRow: { display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 8, alignItems: 'center' },
   legendItem: {
@@ -622,15 +649,20 @@ const styles: Record<string, CSSProperties> = {
     overflow: 'hidden',
     position: 'relative',
     isolation: 'isolate',
-    contain: 'layout paint size',
+    contain: 'layout paint',
+    background: 'rgba(6,10,22,0.78)',
+    zIndex: 0,
   },
-  chartCanvas: { width: '100%', height: '100%', position: 'relative' },
-  tradeGrid: { display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))' },
-  panels: { display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit,minmax(280px,1fr))' },
+  chartCanvas: { width: '100%', height: '100%', position: 'relative', overflow: 'hidden', display: 'block', zIndex: 0 },
+  tradeGrid: { display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))', position: 'relative', zIndex: 1 },
+  panels: { display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit,minmax(280px,1fr))', position: 'relative', zIndex: 1 },
   card: { padding: 12 },
   input: { width: '100%', padding: '0.6rem', border: '1px solid var(--border)', borderRadius: 8, background: '#0f172b', color: 'var(--text)' },
   quickRow: { display: 'flex', gap: 6, marginTop: 6, marginBottom: 8 },
   quickBtn: { border: '1px solid var(--border)', borderRadius: 8, padding: '6px 9px', background: 'transparent', color: 'var(--text)' },
   button: { width: '100%', border: 'none', borderRadius: 10, padding: '0.8rem', fontWeight: 700, color: '#fff' },
   toggle: { width: '100%', textAlign: 'left', border: 'none', background: 'transparent', color: 'inherit', cursor: 'pointer' },
+  signalRow: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 },
+  signalStats: { color: 'var(--muted)', fontSize: 12 },
+  signalReason: { color: 'var(--muted)', fontSize: 12, marginTop: 4 },
 };

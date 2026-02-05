@@ -44,3 +44,71 @@ button {
   border-radius: 14px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
 }
+
+.status-light {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.status-light-buy {
+  background: #3cff8d;
+  animation: status-blink-buy 0.95s ease-in-out infinite;
+}
+
+.status-light-sell {
+  background: #ff5c8d;
+  animation: status-blink-sell 0.95s ease-in-out infinite;
+}
+
+.status-light-neutral {
+  background: #ffd166;
+  animation: status-blink-neutral 0.95s ease-in-out infinite;
+}
+
+@keyframes status-blink-buy {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(60, 255, 141, 0.4), 0 0 12px rgba(60, 255, 141, 0.9);
+  }
+  50% {
+    opacity: 0.35;
+    box-shadow: 0 0 0 5px rgba(60, 255, 141, 0.08), 0 0 4px rgba(60, 255, 141, 0.45);
+  }
+}
+
+@keyframes status-blink-sell {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(255, 92, 141, 0.4), 0 0 12px rgba(255, 92, 141, 0.9);
+  }
+  50% {
+    opacity: 0.35;
+    box-shadow: 0 0 0 5px rgba(255, 92, 141, 0.08), 0 0 4px rgba(255, 92, 141, 0.45);
+  }
+}
+
+@keyframes status-blink-neutral {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(255, 209, 102, 0.35), 0 0 12px rgba(255, 209, 102, 0.85);
+  }
+  50% {
+    opacity: 0.35;
+    box-shadow: 0 0 0 5px rgba(255, 209, 102, 0.08), 0 0 4px rgba(255, 209, 102, 0.4);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-light-buy,
+  .status-light-sell,
+  .status-light-neutral {
+    animation: none;
+    opacity: 1;
+    box-shadow: none;
+  }
+}

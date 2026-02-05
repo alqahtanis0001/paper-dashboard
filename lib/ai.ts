@@ -1,4 +1,4 @@
-export type SignalAction = 'BUY' | 'SELL' | 'OFF';
+export type SignalAction = 'BUY' | 'SELL' | 'NO_TRADE';
 
 export type ModelSignal = {
   model: string;
@@ -12,6 +12,19 @@ export type MetaDecision = {
   confidence: number;
   reason: string;
 };
+
+const COMMITTEE_SIZE = 5;
+const MIN_CONSENSUS_VOTES = 4;
+const MIN_META_CONFIDENCE = 70;
+
+function clampConfidence(value: number) {
+  return Math.max(35, Math.min(95, Math.round(value)));
+}
+
+function avg(values: number[]) {
+  if (!values.length) return 0;
+  return values.reduce((sum, item) => sum + item, 0) / values.length;
+}
 
 function ema(values: number[], period: number) {
   if (values.length === 0) return 0;
@@ -39,64 +52,216 @@ function slope(values: number[]) {
   return values[values.length - 1] - values[values.length - 2];
 }
 
+function computeConsensusConfidence(voters: ModelSignal[], totalAgents: number, opposingVotes: number) {
+  const avgConfidence = avg(voters.map((voter) => voter.confidence));
+  const agreementPct = (voters.length / totalAgents) * 100;
+  const conflictPenalty = opposingVotes * 3;
+  return Math.round(avgConfidence * 0.8 + agreementPct * 0.2 - conflictPenalty);
+}
+
 export function buildSignals(prices: number[], volumes: number[] = []): ModelSignal[] {
   const last = prices[prices.length - 1] ?? 0;
   const emaFast = ema(prices.slice(-30), 9);
   const emaSlow = ema(prices.slice(-60), 21);
   const priceSlope = slope(prices.slice(-5));
   const rsiVal = rsi(prices, 14);
-  const trend: ModelSignal = emaFast > emaSlow && priceSlope > 0
-    ? { model: 'Trend', signal: 'BUY', confidence: 78, reasons: ['EMA9 above EMA21', 'short-term slope positive', 'trend continuation odds favorable'] }
-    : emaFast < emaSlow && priceSlope < 0
-      ? { model: 'Trend', signal: 'SELL', confidence: 76, reasons: ['EMA9 below EMA21', 'short-term slope negative', 'downtrend momentum persists'] }
-      : { model: 'Trend', signal: 'OFF', confidence: 40, reasons: ['EMAs converging', 'slope indecisive'] };
 
-  const momentum: ModelSignal = rsiVal < 35
-    ? { model: 'Momentum', signal: 'BUY', confidence: 72, reasons: [`RSI oversold ${rsiVal.toFixed(1)}`, 'sell pressure likely exhausted'] }
-    : rsiVal > 65
-      ? { model: 'Momentum', signal: 'SELL', confidence: 74, reasons: [`RSI elevated ${rsiVal.toFixed(1)}`, 'mean reversion risk rising'] }
-      : { model: 'Momentum', signal: 'OFF', confidence: 45, reasons: [`RSI neutral ${rsiVal.toFixed(1)}`] };
+  const spreadPct = last ? ((emaFast - emaSlow) / last) * 100 : 0;
+  const slopePct = last ? Math.abs(priceSlope / last) * 100 : 0;
+  const trend: ModelSignal =
+    spreadPct > 0.08 && priceSlope > 0
+      ? {
+          model: 'Trend Agent',
+          signal: 'BUY',
+          confidence: clampConfidence(64 + spreadPct * 65 + slopePct * 220),
+          reasons: ['EMA fast above EMA slow', 'price slope positive', 'trend continuation setup'],
+        }
+      : spreadPct < -0.08 && priceSlope < 0
+        ? {
+            model: 'Trend Agent',
+            signal: 'SELL',
+            confidence: clampConfidence(64 + Math.abs(spreadPct) * 65 + slopePct * 220),
+            reasons: ['EMA fast below EMA slow', 'price slope negative', 'trend continuation setup'],
+          }
+        : {
+            model: 'Trend Agent',
+            signal: 'NO_TRADE',
+            confidence: clampConfidence(58 - Math.min(10, Math.abs(spreadPct) * 20)),
+            reasons: ['trend signal mixed', 'convergence or weak slope'],
+          };
+
+  const momentumDistance = Math.abs(rsiVal - 50);
+  const momentum: ModelSignal =
+    rsiVal <= 33 && priceSlope >= 0
+      ? {
+          model: 'Momentum Agent',
+          signal: 'BUY',
+          confidence: clampConfidence(60 + (33 - rsiVal) * 1.35 + momentumDistance * 0.2),
+          reasons: [`RSI oversold (${rsiVal.toFixed(1)})`, 'momentum recovering'],
+        }
+      : rsiVal >= 67 && priceSlope <= 0
+        ? {
+            model: 'Momentum Agent',
+            signal: 'SELL',
+            confidence: clampConfidence(60 + (rsiVal - 67) * 1.35 + momentumDistance * 0.2),
+            reasons: [`RSI overbought (${rsiVal.toFixed(1)})`, 'momentum fading'],
+          }
+        : {
+            model: 'Momentum Agent',
+            signal: 'NO_TRADE',
+            confidence: clampConfidence(55 + Math.max(0, 14 - momentumDistance) * 0.6),
+            reasons: [`RSI neutral (${rsiVal.toFixed(1)})`, 'no edge confirmation'],
+          };
 
   const recentWindow = prices.slice(-20);
   const maxRecent = Math.max(...recentWindow);
   const minRecent = Math.min(...recentWindow);
   const width = last ? (maxRecent - minRecent) / last : 0;
-  const vol: ModelSignal = width < 0.008
-    ? { model: 'Volatility', signal: 'OFF', confidence: 35, reasons: ['range compressed', 'breakout signal weak'] }
-    : emaFast > emaSlow
-      ? { model: 'Volatility', signal: 'BUY', confidence: 68, reasons: ['range expanding upward', 'high participation in upside candles'] }
-      : { model: 'Volatility', signal: 'SELL', confidence: 68, reasons: ['range expanding downward', 'volatility favoring downside'] };
+  const breakoutBias = (last - avg(recentWindow)) / Math.max(last, 1);
+  const volatility: ModelSignal =
+    width > 0.011 && breakoutBias > 0.0012
+      ? {
+          model: 'Volatility Agent',
+          signal: 'BUY',
+          confidence: clampConfidence(58 + width * 1750 + breakoutBias * 12000),
+          reasons: ['expanding range', 'breakout pressure to upside'],
+        }
+      : width > 0.011 && breakoutBias < -0.0012
+        ? {
+            model: 'Volatility Agent',
+            signal: 'SELL',
+            confidence: clampConfidence(58 + width * 1750 + Math.abs(breakoutBias) * 12000),
+            reasons: ['expanding range', 'breakout pressure to downside'],
+          }
+        : {
+            model: 'Volatility Agent',
+            signal: 'NO_TRADE',
+            confidence: clampConfidence(width < 0.006 ? 72 : 57),
+            reasons: width < 0.006 ? ['range compression', 'waiting for confirmed breakout'] : ['volatility mixed', 'no directional edge'],
+          };
 
-  const volArr = volumes.length ? volumes.slice(-10) : prices.slice(-10).map((p, i, arr) => Math.abs(p - (arr[i - 1] || p)));
-  const avgVol = volArr.reduce((a, b) => a + b, 0) / Math.max(volArr.length, 1);
+  const volArr = volumes.length ? volumes.slice(-12) : prices.slice(-12).map((p, i, arr) => Math.abs(p - (arr[i - 1] || p)));
+  const avgVol = avg(volArr);
   const lastVol = volArr[volArr.length - 1] || 0;
-  const volumeSignal: ModelSignal = lastVol > avgVol * 1.8 && priceSlope > 0
-    ? { model: 'Volume', signal: 'BUY', confidence: 70, reasons: ['volume spike confirms breakout', 'buyers absorbing offers'] }
-    : lastVol > avgVol * 1.8 && priceSlope < 0
-      ? { model: 'Volume', signal: 'SELL', confidence: 70, reasons: ['volume spike on selloff', 'offers overwhelming bids'] }
-      : { model: 'Volume', signal: 'OFF', confidence: 40, reasons: ['no clear volume confirmation'] };
+  const volSpike = avgVol > 0 ? lastVol / avgVol : 1;
+  const volumeSignal: ModelSignal =
+    volSpike > 1.65 && priceSlope > 0
+      ? {
+          model: 'Volume Agent',
+          signal: 'BUY',
+          confidence: clampConfidence(60 + (volSpike - 1) * 22 + slopePct * 140),
+          reasons: ['volume expansion supports buyers', 'positive tape pressure'],
+        }
+      : volSpike > 1.65 && priceSlope < 0
+        ? {
+            model: 'Volume Agent',
+            signal: 'SELL',
+            confidence: clampConfidence(60 + (volSpike - 1) * 22 + slopePct * 140),
+            reasons: ['volume expansion supports sellers', 'negative tape pressure'],
+          }
+        : {
+            model: 'Volume Agent',
+            signal: 'NO_TRADE',
+            confidence: clampConfidence(58 + Math.max(0, 1.65 - volSpike) * 7),
+            reasons: ['insufficient volume confirmation', 'breakout not validated'],
+          };
 
   const tail = prices.slice(-30);
-  const patternSignal: ModelSignal = last > tail[0] && tail[0] === Math.min(...tail)
-    ? { model: 'Pattern', signal: 'BUY', confidence: 75, reasons: ['local flush then recovery', 'higher closes after exhaustion'] }
-    : last < tail[0] && tail[0] === Math.max(...tail)
-      ? { model: 'Pattern', signal: 'SELL', confidence: 75, reasons: ['local peak then breakdown', 'lower closes after rejection'] }
-      : { model: 'Pattern', signal: 'OFF', confidence: 45, reasons: ['no clean pattern edge'] };
+  const tailHigh = Math.max(...tail);
+  const tailLow = Math.min(...tail);
+  const rebound = (last - tailLow) / Math.max(last, 1);
+  const rejection = (tailHigh - last) / Math.max(last, 1);
+  const patternSignal: ModelSignal =
+    rebound > 0.012 && tail[0] <= tailLow * 1.01
+      ? {
+          model: 'Pattern Agent',
+          signal: 'BUY',
+          confidence: clampConfidence(62 + rebound * 1800),
+          reasons: ['washout then recovery', 'bullish reversal structure'],
+        }
+      : rejection > 0.012 && tail[0] >= tailHigh * 0.99
+        ? {
+            model: 'Pattern Agent',
+            signal: 'SELL',
+            confidence: clampConfidence(62 + rejection * 1800),
+            reasons: ['failed breakout', 'bearish reversal structure'],
+          }
+        : {
+            model: 'Pattern Agent',
+            signal: 'NO_TRADE',
+            confidence: clampConfidence(56),
+            reasons: ['pattern quality low', 'no reliable reversal edge'],
+          };
 
-  return [trend, momentum, vol, volumeSignal, patternSignal];
+  const committee = [trend, momentum, volatility, volumeSignal, patternSignal];
+  return committee.slice(0, COMMITTEE_SIZE);
 }
 
 export function aggregateSignals(signals: ModelSignal[]): MetaDecision {
-  const buy = signals.filter((s) => s.signal === 'BUY');
-  const sell = signals.filter((s) => s.signal === 'SELL');
-  if (buy.length >= 4) return { action: 'BUY', confidence: Math.round((buy.length / signals.length) * 100), reason: 'Strong multi-agent upside agreement' };
-  if (sell.length >= 4) return { action: 'SELL', confidence: Math.round((sell.length / signals.length) * 100), reason: 'Strong multi-agent downside agreement' };
-  if (buy.length > 0 && sell.length > 0) {
+  const committee = signals.slice(0, COMMITTEE_SIZE);
+  if (committee.length < COMMITTEE_SIZE) {
     return {
       action: 'NO_TRADE',
-      confidence: 55,
-      reason: `Agent conflict: ${buy.length} buy vs ${sell.length} sell votes`,
+      confidence: 50,
+      reason: `Committee incomplete (${committee.length}/${COMMITTEE_SIZE}); conservative no-trade`,
     };
   }
-  return { action: 'NO_TRADE', confidence: 40, reason: 'Insufficient conviction across agents' };
+
+  const buyVotes = committee.filter((signal) => signal.signal === 'BUY');
+  const sellVotes = committee.filter((signal) => signal.signal === 'SELL');
+  const noTradeVotes = committee.filter((signal) => signal.signal === 'NO_TRADE');
+
+  if (buyVotes.length >= MIN_CONSENSUS_VOTES) {
+    const overallConfidence = computeConsensusConfidence(buyVotes, committee.length, sellVotes.length);
+    if (overallConfidence > MIN_META_CONFIDENCE) {
+      return {
+        action: 'BUY',
+        confidence: overallConfidence,
+        reason: `BUY consensus ${buyVotes.length}/5, overall confidence ${overallConfidence}%`,
+      };
+    }
+    return {
+      action: 'NO_TRADE',
+      confidence: overallConfidence,
+      reason: `BUY votes ${buyVotes.length}/5 but confidence ${overallConfidence}% is not above ${MIN_META_CONFIDENCE}%`,
+    };
+  }
+
+  if (sellVotes.length >= MIN_CONSENSUS_VOTES) {
+    const overallConfidence = computeConsensusConfidence(sellVotes, committee.length, buyVotes.length);
+    if (overallConfidence > MIN_META_CONFIDENCE) {
+      return {
+        action: 'SELL',
+        confidence: overallConfidence,
+        reason: `SELL consensus ${sellVotes.length}/5, overall confidence ${overallConfidence}%`,
+      };
+    }
+    return {
+      action: 'NO_TRADE',
+      confidence: overallConfidence,
+      reason: `SELL votes ${sellVotes.length}/5 but confidence ${overallConfidence}% is not above ${MIN_META_CONFIDENCE}%`,
+    };
+  }
+
+  if (buyVotes.length > 0 && sellVotes.length > 0) {
+    return {
+      action: 'NO_TRADE',
+      confidence: 52,
+      reason: `Conflict in committee (${buyVotes.length} BUY vs ${sellVotes.length} SELL); stay conservative`,
+    };
+  }
+
+  if (noTradeVotes.length >= 3) {
+    return {
+      action: 'NO_TRADE',
+      confidence: clampConfidence(avg(noTradeVotes.map((signal) => signal.confidence))),
+      reason: `No-trade majority (${noTradeVotes.length}/5) and weak directional agreement`,
+    };
+  }
+
+  return {
+    action: 'NO_TRADE',
+    confidence: 50,
+    reason: 'Consensus below 4/5; Meta remains conservative by default',
+  };
 }

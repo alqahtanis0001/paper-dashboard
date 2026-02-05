@@ -3,6 +3,7 @@ import { requireUserSession } from '@/lib/auth';
 import { getWallet } from '@/lib/wallet';
 import { prisma } from '@/lib/prisma';
 import { dealEngine } from '@/lib/engine/dealEngine';
+import { simulateExecution } from '@/lib/execution';
 
 export async function POST(req: NextRequest) {
   try {
@@ -12,7 +13,7 @@ export async function POST(req: NextRequest) {
   }
 
   const wallet = await getWallet();
-  const { sellPercent } = await req.json().catch(() => ({}));
+  const { sellPercent, midPrice, regimeVolatility } = await req.json().catch(() => ({}));
 
   if (typeof sellPercent !== 'number' || Number.isNaN(sellPercent) || !Number.isFinite(sellPercent)) {
     return NextResponse.json({ error: 'sellPercent must be a number' }, { status: 400 });
@@ -26,12 +27,27 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'No open position' }, { status: 400 });
   }
 
-  const price = dealEngine.getCurrentPrice() || position.entryPrice;
+  const fallbackMid = dealEngine.getCurrentPrice() || position.entryPrice;
+  const effectiveMid =
+    typeof midPrice === 'number' && Number.isFinite(midPrice) && midPrice > 0 ? midPrice : fallbackMid;
+  const vol =
+    typeof regimeVolatility === 'number' && Number.isFinite(regimeVolatility) && regimeVolatility >= 0
+      ? regimeVolatility
+      : 0.5;
+
   const fraction = sellPercent / 100;
   const qtyTotal = position.sizeUsd / position.entryPrice;
   const qtyToSell = qtyTotal * fraction;
-  const proceeds = qtyToSell * price;
-  const pnl = (price - position.entryPrice) * qtyToSell;
+  const { fillPrice, feeUsd: unitFeeUsd, slippageUsd: unitSlippageUsd, latencyMs } = simulateExecution(
+    effectiveMid,
+    'sell',
+    vol
+  );
+
+  const proceeds = qtyToSell * fillPrice;
+  const feeUsd = unitFeeUsd * qtyToSell;
+  const pnl = (fillPrice - position.entryPrice) * qtyToSell - feeUsd;
+  const slippageUsd = unitSlippageUsd * qtyToSell;
   const remainingSizeUsd = position.sizeUsd * (1 - fraction);
   const soldSizeUsd = position.sizeUsd * fraction;
 
@@ -41,7 +57,11 @@ export async function POST(req: NextRequest) {
         data: {
           symbol: position.symbol,
           side: 'SELL',
-          price,
+          price: fillPrice,
+          fillPrice,
+          feeUsd,
+          slippageUsd,
+          latencyMs,
           sizeUsd: soldSizeUsd,
           pnl,
           walletId: wallet.id,
@@ -52,7 +72,7 @@ export async function POST(req: NextRequest) {
       await tx.wallet.update({
         where: { id: wallet.id },
         data: {
-          cashBalance: { increment: proceeds },
+          cashBalance: { increment: proceeds - feeUsd },
           equity: { increment: pnl },
           pnlTotal: { increment: pnl },
         },
@@ -67,7 +87,7 @@ export async function POST(req: NextRequest) {
       });
     });
 
-    return NextResponse.json({ pnl, price });
+    return NextResponse.json({ pnl, price: fillPrice, feeUsd, slippageUsd, latencyMs });
   } catch (err) {
     console.error('SELL transaction failed', err);
     return NextResponse.json({ error: 'Trade failed' }, { status: 500 });

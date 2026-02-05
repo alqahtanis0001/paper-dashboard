@@ -1,25 +1,45 @@
 import { randomInt } from 'crypto';
 
-// Constants for fees and spread
-const MAKER_FEE = 0.0002; // 0.02%
-const TAKER_FEE = 0.0005; // 0.05%
-const SPREAD = 0.01; // 1% spread
+// Execution sim constants tuned for light realism
+const MAKER_FEE = 0.00015; // 1.5 bps
+const TAKER_FEE = 0.0006;  // 6  bps
+const SPREAD_BPS = 0.0004; // 4 bps half‑spread around mid
+const BASE_SLIPPAGE_BPS = 0.00005; // 0.5 bps minimum slippage
 
-export function simulateExecution(midPrice: number, side: 'buy' | 'sell', regimeVolatility: number) {
-    // Calculate spread
-    const spread = side === 'buy' ? midPrice * (1 + SPREAD) : midPrice * (1 - SPREAD);
+type Side = 'buy' | 'sell';
 
-    // Calculate slippage
-    const slippage = (Math.random() * regimeVolatility) * (side === 'buy' ? 1 : -1);
+/**
+ * Simulate an order fill around a mid price.
+ * - Buys pay the ask (mid + spread); sells hit the bid (mid - spread).
+ * - Slippage magnitude scales with regimeVolatility and randomizes per fill.
+ * - Fees randomly pick maker vs taker to keep variety in the log.
+ * - feeUsd/slippageUsd are per-unit; multiply by quantity for trade totals.
+ */
+export function simulateExecution(midPrice: number, side: Side, regimeVolatility: number) {
+  const safeMid = Number.isFinite(midPrice) && midPrice > 0 ? midPrice : 0;
+  const vol = Math.max(0, regimeVolatility ?? 0);
 
-    // Calculate fill price
-    const fillPrice = spread + slippage;
+  // Apply spread to mid
+  const spreadSigned = safeMid * SPREAD_BPS * (side === 'buy' ? 1 : -1);
 
-    // Calculate fees
-    const feeUsd = side === 'buy' ? fillPrice * MAKER_FEE : fillPrice * TAKER_FEE;
+  // Tiny random slippage scaled by volatility (capped for sanity)
+  const volScale = Math.min(vol, 5); // prevent runaway fills
+  const slippageBps = BASE_SLIPPAGE_BPS + Math.random() * BASE_SLIPPAGE_BPS * 6 * volScale;
+  const slippageSigned = safeMid * slippageBps * (side === 'buy' ? 1 : -1);
 
-    // Simulate latency
-    const latencyMs = randomInt(100, 601); // Random latency between 100ms and 600ms
+  const fillPrice = safeMid + spreadSigned + slippageSigned;
 
-    return { fillPrice, feeUsd, slippageUsd: Math.abs(slippage), latencyMs };
+  // Maker / taker mix (20% maker to vary fees)
+  const isMaker = Math.random() < 0.2;
+  const feeRate = isMaker ? MAKER_FEE : TAKER_FEE;
+  const feeUsd = fillPrice * feeRate;
+
+  const latencyMs = randomInt(100, 601); // inclusive 100-600ms
+
+  return {
+    fillPrice,
+    feeUsd,
+    slippageUsd: Math.abs(slippageSigned),
+    latencyMs,
+  };
 }

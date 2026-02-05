@@ -25,14 +25,29 @@ export async function POST(req: NextRequest) {
   const open = await prisma.position.findFirst({ where: { isOpen: true } });
   if (open) return NextResponse.json({ error: 'Position already open' }, { status: 400 });
 
-  const price = dealEngine.getCurrentPrice() || 100;
+  const fallbackMid = dealEngine.getCurrentPrice() || 100;
+  const effectiveMid =
+    typeof midPrice === 'number' && Number.isFinite(midPrice) && midPrice > 0 ? midPrice : fallbackMid;
+  const vol =
+    typeof regimeVolatility === 'number' && Number.isFinite(regimeVolatility) && regimeVolatility >= 0
+      ? regimeVolatility
+      : 0.5;
+
+  const { fillPrice, feeUsd: unitFeeUsd, slippageUsd: unitSlippageUsd, latencyMs } = simulateExecution(
+    effectiveMid,
+    'buy',
+    vol
+  );
+
+  const quantity = amountUsd / fillPrice;
+  const feeUsd = unitFeeUsd * quantity;
+  const slippageUsd = unitSlippageUsd * quantity;
+
   const activeDealId = dealEngine.getActiveDealId();
 
-  if (wallet.cashBalance < amountUsd) {
+  if (wallet.cashBalance < amountUsd + feeUsd) {
     return NextResponse.json({ error: 'Insufficient balance' }, { status: 400 });
   }
-
-  const { fillPrice, feeUsd, slippageUsd, latencyMs } = simulateExecution(midPrice, 'buy', regimeVolatility);
 
   try {
     const result = await prisma.$transaction(async (tx) => {
@@ -40,7 +55,7 @@ export async function POST(req: NextRequest) {
         data: {
           isOpen: true,
           symbol: 'SCENARIO',
-          entryPrice: price,
+          entryPrice: fillPrice,
           entryTime: new Date(),
           sizeUsd: amountUsd,
           walletId: wallet.id,
@@ -48,11 +63,15 @@ export async function POST(req: NextRequest) {
         },
       });
 
-      await tx.trade.create({
+      const trade = await tx.trade.create({
         data: {
           symbol: position.symbol,
           side: 'BUY',
           price: fillPrice,
+          fillPrice,
+          feeUsd,
+          slippageUsd,
+          latencyMs,
           sizeUsd: amountUsd,
           walletId: wallet.id,
           dealId: activeDealId ?? undefined,
@@ -61,13 +80,19 @@ export async function POST(req: NextRequest) {
 
       const updatedWallet = await tx.wallet.update({
         where: { id: wallet.id },
-        data: { cashBalance: { decrement: amountUsd } },
+        data: { cashBalance: { decrement: amountUsd + feeUsd } },
       });
 
-      return { position, wallet: updatedWallet };
+      return { position, wallet: updatedWallet, trade };
     });
 
-    return NextResponse.json({ position: result.position, price });
+    return NextResponse.json({
+      position: result.position,
+      price: fillPrice,
+      feeUsd,
+      slippageUsd,
+      latencyMs,
+    });
   } catch (err) {
     console.error('BUY transaction failed', err);
     return NextResponse.json({ error: 'Trade failed' }, { status: 500 });

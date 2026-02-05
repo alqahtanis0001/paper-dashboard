@@ -1,6 +1,6 @@
 import { Deal, DealJump } from '@prisma/client';
 import { prisma } from '../prisma';
-import { buildSignals, aggregateSignals } from '../ai';
+import { buildSignals, aggregateSignals, type ModelSignal } from '../ai';
 import { getIO } from '../socketServer';
 
 type Candle = {
@@ -39,9 +39,7 @@ class DealEngine {
   private regime: RegimeState | null = null;
   private nextRegimeSwitch = 0;
   private lastTickAt = 0;
-  private signalOutcomes: { id: string; time: number; price: number; action: 'BUY' | 'SELL' }[] = [];
-  private hitRateByModel: Record<string, { wins: number; total: number }> = {};
-  private metaHitRate = { wins: 0, total: 0 };
+  private signalOutcomes: { id: string; time: number; price: number; action: 'BUY' | 'SELL' | 'NO_TRADE'; horizonSec: number }[] = [];
 
   constructor() {
     this.startWatcher();
@@ -279,31 +277,70 @@ class DealEngine {
     io?.emit('price_tick', { timestamp: now, price, candle: this.candles[this.candles.length - 1], regime: regime.kind });
   }
 
+  private async computeLast50HitRates() {
+    const resolved = await prisma.aiSignalLog.findMany({
+      where: { resolvedAt: { not: null }, outcomePct: { not: null } },
+      orderBy: { resolvedAt: 'desc' },
+      take: 50,
+    });
+
+    const thresholdPct = 0.15;
+    const metaStats = { wins: 0, total: 0 };
+    const agentStats: Record<string, { wins: number; total: number }> = {};
+
+    for (const row of resolved) {
+      const outcomePct = row.outcomePct ?? 0;
+      const resolvedFlat = Math.abs(outcomePct) <= thresholdPct;
+      const meta = (row.metaDecisionJson ?? {}) as { action?: 'BUY' | 'SELL' | 'NO_TRADE' };
+      const metaAction = meta.action ?? 'NO_TRADE';
+      const metaCorrect = metaAction === 'BUY' ? outcomePct > 0 : metaAction === 'SELL' ? outcomePct < 0 : resolvedFlat;
+      metaStats.total += 1;
+      if (metaCorrect) metaStats.wins += 1;
+
+      const signals = (row.signalsJson as ModelSignal[] | null) ?? [];
+      for (const signal of signals) {
+        if (!agentStats[signal.model]) agentStats[signal.model] = { wins: 0, total: 0 };
+        const stat = agentStats[signal.model];
+        stat.total += 1;
+        const ok = signal.signal === 'BUY' ? outcomePct > 0 : signal.signal === 'SELL' ? outcomePct < 0 : resolvedFlat;
+        if (ok) stat.wins += 1;
+      }
+    }
+
+    return {
+      meta: metaStats.total ? Math.round((metaStats.wins / metaStats.total) * 100) : 0,
+      agents: Object.fromEntries(Object.entries(agentStats).map(([k, v]) => [k, v.total ? Math.round((v.wins / v.total) * 100) : 0])),
+    };
+  }
+
   private async settleSignalOutcomes(currentPrice: number) {
-    const horizonMs = 60_000;
     const now = Date.now();
-    const matured = this.signalOutcomes.filter((s) => now - s.time >= horizonMs);
-    this.signalOutcomes = this.signalOutcomes.filter((s) => now - s.time < horizonMs);
+    const matured = this.signalOutcomes.filter((s) => now - s.time >= s.horizonSec * 1000);
+    this.signalOutcomes = this.signalOutcomes.filter((s) => now - s.time < s.horizonSec * 1000);
+
     for (const sig of matured) {
       const outcomePct = ((currentPrice - sig.price) / sig.price) * 100;
-      const metaCorrect = sig.action === 'BUY' ? outcomePct > 0 : outcomePct < 0;
-      this.metaHitRate.total += 1;
-      if (metaCorrect) this.metaHitRate.wins += 1;
+      const isFlat = Math.abs(outcomePct) <= 0.15;
+      const metaCorrect = sig.action === 'BUY' ? outcomePct > 0 : sig.action === 'SELL' ? outcomePct < 0 : isFlat;
       await prisma.aiSignalLog.update({
         where: { id: sig.id },
         data: {
           resolvedAt: new Date(),
           outcomePct,
           metaCorrect,
-          hitRatesJson: {
-            meta: this.metaHitRate.total ? Math.round((this.metaHitRate.wins / this.metaHitRate.total) * 100) : 0,
-            agents: Object.fromEntries(
-              Object.entries(this.hitRateByModel).map(([k, v]) => [k, v.total ? Math.round((v.wins / v.total) * 100) : 0])
-            ),
-          },
         },
       }).catch(() => null);
     }
+
+    const hitRates = await this.computeLast50HitRates().catch(() => ({ meta: 0, agents: {} as Record<string, number> }));
+    if (matured.length > 0) {
+      await prisma.aiSignalLog.updateMany({
+        where: { id: { in: matured.map((m) => m.id) } },
+        data: { hitRatesJson: hitRates as unknown as object },
+      }).catch(() => null);
+    }
+
+    return hitRates;
   }
 
   private async emitSignals(deal: Deal & { jumps: DealJump[] }) {
@@ -312,40 +349,28 @@ class DealEngine {
     const signals = buildSignals(prices, this.candles.map((c) => c.volume));
     const meta = aggregateSignals(signals);
 
-    for (const signal of signals) {
-      if (!this.hitRateByModel[signal.model]) this.hitRateByModel[signal.model] = { wins: 0, total: 0 };
-      const last2 = prices.slice(-2);
-      if (last2.length === 2 && signal.signal !== 'OFF') {
-        const delta = last2[1] - last2[0];
-        this.hitRateByModel[signal.model].total += 1;
-        if ((signal.signal === 'BUY' && delta > 0) || (signal.signal === 'SELL' && delta < 0)) this.hitRateByModel[signal.model].wins += 1;
-      }
-    }
-
-    const io = getIO();
-    io?.emit('ai_signals', {
-      signals,
-      meta,
-      hitRates: {
-        meta: this.metaHitRate.total ? Math.round((this.metaHitRate.wins / this.metaHitRate.total) * 100) : 0,
-        agents: Object.fromEntries(Object.entries(this.hitRateByModel).map(([k, v]) => [k, v.total ? Math.round((v.wins / v.total) * 100) : 0])),
-      },
-    });
-    io?.emit('deal_state', { status: 'RUNNING', dealId: deal.id });
-
     const created = await prisma.aiSignalLog.create({
       data: {
         dealId: deal.id,
         signalsJson: signals as unknown as object,
         metaDecisionJson: meta as unknown as object,
+        horizonSec: 60,
       },
     }).catch(() => null);
 
-    if (created && (meta.action === 'BUY' || meta.action === 'SELL')) {
-      this.signalOutcomes.push({ id: created.id, time: Date.now(), price: prices[prices.length - 1], action: meta.action });
+    if (created) {
+      this.signalOutcomes.push({ id: created.id, time: Date.now(), price: prices[prices.length - 1], action: meta.action, horizonSec: created.horizonSec });
     }
 
-    await this.settleSignalOutcomes(prices[prices.length - 1]);
+    const hitRates = await this.settleSignalOutcomes(prices[prices.length - 1]);
+
+    const io = getIO();
+    io?.emit('ai_signals', {
+      signals,
+      meta,
+      hitRates,
+    });
+    io?.emit('deal_state', { status: 'RUNNING', dealId: deal.id });
   }
 
   private async finishDeal() {
@@ -368,6 +393,14 @@ class DealEngine {
     return this.price || this.currentDeal?.basePrice || 0;
   }
 
+  getRegimeVolatility() {
+    if (!this.regime) return 0.5;
+    if (this.regime.kind === 'HIGH_VOL') return 1.5;
+    if (this.regime.kind === 'LOW_VOL') return 0.2;
+    if (this.regime.kind === 'CHOPPY') return 0.8;
+    return 1;
+  }
+
   getActiveDealId() {
     return this.currentDeal?.id ?? null;
   }
@@ -381,6 +414,9 @@ class DealEngineDisabled {
   }
   getActiveDealId() {
     return null;
+  }
+  getRegimeVolatility() {
+    return 0.5;
   }
 }
 

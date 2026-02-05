@@ -61,6 +61,7 @@ export async function getSessionFromRequest(req: NextRequest): Promise<SessionCo
 export async function requireUserSession(req: NextRequest) {
   const session = await getSessionFromRequest(req);
   if (!session) throw new Error('UNAUTHENTICATED');
+  if (session.role !== 'USER') throw new Error('FORBIDDEN');
   return session;
 }
 

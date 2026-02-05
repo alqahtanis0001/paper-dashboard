@@ -4,6 +4,7 @@ import { setIO } from '@/lib/socketServer';
 import { dealEngine } from '@/lib/engine/dealEngine';
 import type { Server as HTTPServer } from 'http';
 import type { Socket } from 'net';
+import { logServerAction } from '@/lib/serverLogger';
 
 type NextApiResponseServerIO = NextApiResponse & {
   socket: Socket & {
@@ -20,6 +21,7 @@ export const config = {
 };
 
 export default function handler(req: NextApiRequest, res: NextApiResponseServerIO) {
+  logServerAction('socket.handler', 'start');
   // ensure engine is initialized
   dealEngine.getCurrentPrice();
 
@@ -30,6 +32,10 @@ export default function handler(req: NextApiRequest, res: NextApiResponseServerI
     });
     res.socket.server.io = io;
     setIO(io);
+    logServerAction('socket.handler', 'success', { initialized: true });
+  }
+  if (res.socket.server.io) {
+    logServerAction('socket.handler', 'success', { initialized: false });
   }
   res.end();
 }

@@ -4,10 +4,12 @@ import { prisma } from '@/lib/prisma';
 import { getWallet } from '@/lib/wallet';
 import { z } from 'zod';
 import { logAuditEvent } from '@/lib/audit';
+import { logServerAction } from '@/lib/serverLogger';
 
 const bodySchema = z.object({ amount: z.number().positive() });
 
 export async function POST(req: NextRequest) {
+  logServerAction('withdraw.request', 'start');
   try {
     await requireUserSession(req);
   } catch (error) {
@@ -16,10 +18,14 @@ export async function POST(req: NextRequest) {
 
   const data = await req.json().catch(() => null);
   const parsed = bodySchema.safeParse(data);
-  if (!parsed.success) return NextResponse.json({ error: 'Invalid amount' }, { status: 400 });
+  if (!parsed.success) {
+    logServerAction('withdraw.request', 'warn', { reason: 'invalid_amount' });
+    return NextResponse.json({ error: 'Invalid amount' }, { status: 400 });
+  }
 
   const wallet = await getWallet();
   if (wallet.cashBalance < parsed.data.amount) {
+    logServerAction('withdraw.request', 'warn', { reason: 'insufficient_balance' });
     return NextResponse.json({ error: 'Insufficient balance' }, { status: 400 });
   }
 
@@ -33,5 +39,6 @@ export async function POST(req: NextRequest) {
     status: request.status,
   });
 
+  logServerAction('withdraw.request', 'success', { withdrawalId: request.id, amount: request.amount });
   return NextResponse.json({ request });
 }

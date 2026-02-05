@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server';
+import { logServerAction } from '@/lib/serverLogger';
 
 export async function GET() {
-  return NextResponse.json({ ok: true, ts: Date.now() }, { status: 200 });
+  logServerAction('ping.get', 'start');
+  const payload = { ok: true, ts: Date.now() };
+  logServerAction('ping.get', 'success', payload);
+  return NextResponse.json(payload, { status: 200 });
 }
 

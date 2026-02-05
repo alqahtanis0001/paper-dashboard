@@ -3,6 +3,7 @@ import { authErrorResponse, requireAdminSession } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { z } from 'zod';
 import { logAuditEvent } from '@/lib/audit';
+import { logServerAction } from '@/lib/serverLogger';
 
 const jumpSchema = z.object({
   riseDelaySec: z.number().int().nonnegative(),
@@ -23,15 +24,20 @@ const bodySchema = z.object({
 });
 
 export async function POST(req: NextRequest) {
+  logServerAction('admin.deal.create', 'start');
   try {
     await requireAdminSession(req);
   } catch (error) {
+    logServerAction('admin.deal.create', 'error', error);
     return authErrorResponse(error);
   }
 
   const data = await req.json().catch(() => null);
   const parsed = bodySchema.safeParse(data);
-  if (!parsed.success) return NextResponse.json({ error: 'Invalid payload' }, { status: 400 });
+  if (!parsed.success) {
+    logServerAction('admin.deal.create', 'warn', { reason: 'invalid_payload' });
+    return NextResponse.json({ error: 'Invalid payload' }, { status: 400 });
+  }
 
   const deal = await prisma.deal.create({
     data: {
@@ -51,5 +57,6 @@ export async function POST(req: NextRequest) {
   });
 
   await logAuditEvent('deal_created', 'ADMIN', { dealId: deal.id, symbol: deal.symbol });
+  logServerAction('admin.deal.create', 'success', { dealId: deal.id });
   return NextResponse.json({ deal });
 }

@@ -3,6 +3,7 @@ import { authErrorResponse, requireAdminSession } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { z } from 'zod';
 import { logAuditEvent } from '@/lib/audit';
+import { logServerAction } from '@/lib/serverLogger';
 
 const bodySchema = z.object({
   id: z.string().uuid(),
@@ -10,9 +11,11 @@ const bodySchema = z.object({
 });
 
 export async function GET(req: NextRequest) {
+  logServerAction('admin.withdrawals.get', 'start');
   try {
     await requireAdminSession(req);
   } catch (error) {
+    logServerAction('admin.withdrawals.get', 'error', error);
     return authErrorResponse(error);
   }
 
@@ -20,23 +23,33 @@ export async function GET(req: NextRequest) {
     where: { status: 'PENDING' },
     orderBy: { time: 'asc' },
   });
+  logServerAction('admin.withdrawals.get', 'success', { count: requests.length });
   return NextResponse.json({ requests });
 }
 
 export async function POST(req: NextRequest) {
+  logServerAction('admin.withdrawals.post', 'start');
   try {
     await requireAdminSession(req);
   } catch (error) {
+    logServerAction('admin.withdrawals.post', 'error', error);
     return authErrorResponse(error);
   }
 
   const data = await req.json().catch(() => null);
   const parsed = bodySchema.safeParse(data);
-  if (!parsed.success) return NextResponse.json({ error: 'Invalid payload' }, { status: 400 });
+  if (!parsed.success) {
+    logServerAction('admin.withdrawals.post', 'warn', { reason: 'invalid_payload' });
+    return NextResponse.json({ error: 'Invalid payload' }, { status: 400 });
+  }
 
   const request = await prisma.withdrawalRequest.findUnique({ where: { id: parsed.data.id } });
-  if (!request) return NextResponse.json({ error: 'Withdrawal request not found' }, { status: 404 });
+  if (!request) {
+    logServerAction('admin.withdrawals.post', 'warn', { reason: 'not_found', withdrawalId: parsed.data.id });
+    return NextResponse.json({ error: 'Withdrawal request not found' }, { status: 404 });
+  }
   if (request.status !== 'PENDING') {
+    logServerAction('admin.withdrawals.post', 'warn', { reason: 'already_processed', status: request.status });
     return NextResponse.json({ error: `Request already ${request.status}` }, { status: 400 });
   }
 
@@ -50,6 +63,7 @@ export async function POST(req: NextRequest) {
       amount: request.amount,
       status: updated.status,
     });
+    logServerAction('admin.withdrawals.post', 'success', { action: 'REJECT', withdrawalId: request.id });
     return NextResponse.json({ request: updated });
   }
 
@@ -78,11 +92,14 @@ export async function POST(req: NextRequest) {
       walletCashBalance: result.updatedWallet.cashBalance,
     });
 
+    logServerAction('admin.withdrawals.post', 'success', { action: 'APPROVE', withdrawalId: request.id });
     return NextResponse.json({ request: result.updatedRequest, wallet: result.updatedWallet });
   } catch (error) {
     if (error instanceof Error && error.message === 'INSUFFICIENT_CASH') {
+      logServerAction('admin.withdrawals.post', 'warn', { reason: 'insufficient_cash', withdrawalId: request.id });
       return NextResponse.json({ error: 'Insufficient wallet cash at approval time' }, { status: 400 });
     }
+    logServerAction('admin.withdrawals.post', 'error', error);
     return NextResponse.json({ error: 'Approval failed' }, { status: 500 });
   }
 }

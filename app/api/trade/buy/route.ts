@@ -5,6 +5,7 @@ import { prisma } from '@/lib/prisma';
 import { dealEngine } from '@/lib/engine/dealEngine';
 import { simulateExecution } from '@/lib/execution';
 import { logAuditEvent } from '@/lib/audit';
+import { logServerAction } from '@/lib/serverLogger';
 
 async function getExecutionDeal() {
   const activeDealId = dealEngine.getActiveDealId();
@@ -16,6 +17,7 @@ async function getExecutionDeal() {
 }
 
 export async function POST(req: NextRequest) {
+  logServerAction('trade.buy', 'start');
   try {
     await requireUserSession(req);
   } catch (error) {
@@ -25,11 +27,15 @@ export async function POST(req: NextRequest) {
   const wallet = await getWallet();
   const { amountUsd } = await req.json().catch(() => ({}));
   if (typeof amountUsd !== 'number' || !Number.isFinite(amountUsd) || amountUsd <= 0) {
+    logServerAction('trade.buy', 'warn', { reason: 'invalid_amount' });
     return NextResponse.json({ error: 'amountUsd must be > 0' }, { status: 400 });
   }
 
   const open = await prisma.position.findFirst({ where: { isOpen: true } });
-  if (open) return NextResponse.json({ error: 'Position already open' }, { status: 400 });
+  if (open) {
+    logServerAction('trade.buy', 'warn', { reason: 'position_already_open' });
+    return NextResponse.json({ error: 'Position already open' }, { status: 400 });
+  }
 
   const activeDeal = await getExecutionDeal();
   const symbol = activeDeal?.symbol ?? 'MARKET';
@@ -89,9 +95,10 @@ export async function POST(req: NextRequest) {
       dealId: activeDeal?.id ?? null,
     });
 
+    logServerAction('trade.buy', 'success', { tradeId: result.trade.id, symbol });
     return NextResponse.json({ position: result.position, trade: result.trade, wallet: result.updatedWallet });
   } catch (err) {
-    console.error('BUY transaction failed', err);
+    logServerAction('trade.buy', 'error', err);
     return NextResponse.json({ error: 'Trade failed' }, { status: 500 });
   }
 }

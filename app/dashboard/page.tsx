@@ -58,6 +58,7 @@ export default function DashboardPage() {
   const chartRef = useRef<HTMLDivElement>(null);
   const chartApi = useRef<IChartApi | null>(null);
   const candleSeries = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const markersApi = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
 
   const volumeSeries = useRef<ISeriesApi<'Histogram'> | null>(null);
   const ema20Series = useRef<ISeriesApi<'Line'> | null>(null);

@@ -57,6 +57,7 @@ type ChartBootstrapResponse = {
 };
 
 const BAND_MULTIPLIER = 1.85;
+const KEEP_ALIVE_PING_INTERVAL_MS = 6 * 60 * 1000;
 
 const formatPrice = (value: number) => {
   const abs = Math.abs(value);
@@ -295,7 +296,7 @@ export default function DashboardPage() {
     };
 
     pingWebsite();
-    const pingInterval = setInterval(pingWebsite, 8 * 60 * 1000);
+    const pingInterval = setInterval(pingWebsite, KEEP_ALIVE_PING_INTERVAL_MS);
     return () => clearInterval(pingInterval);
   }, []);
 

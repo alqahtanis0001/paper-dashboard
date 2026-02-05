@@ -12,6 +12,21 @@ type Candle = {
   volume: number;
 };
 
+type MarketRegime = 'TRENDING' | 'CHOPPY' | 'HIGH_VOL' | 'LOW_VOL';
+
+type RegimeState = {
+  kind: MarketRegime;
+  driftBpsPerSec: number;
+  noiseBps: number;
+  wickBps: number;
+  volumeBase: number;
+  volumeJitter: number;
+  meanRevert: number;
+  trendDirection?: 1 | -1;
+};
+
+const randomBetween = (min: number, max: number) => min + Math.random() * (max - min);
+
 class DealEngine {
   private watcher: NodeJS.Timeout | null = null;
   private tickTimer: NodeJS.Timeout | null = null;
@@ -21,6 +36,9 @@ class DealEngine {
   private startTime = 0;
   private candles: Candle[] = [];
   private volumes: number[] = [];
+  private regime: RegimeState | null = null;
+  private nextRegimeSwitch = 0;
+  private lastTickAt = 0;
 
   constructor() {
     this.startWatcher();
@@ -65,6 +83,8 @@ class DealEngine {
     this.startTime = Date.now();
     this.candles = [];
     this.volumes = [];
+    this.lastTickAt = Date.now();
+    this.scheduleRegime();
 
     const io = getIO();
     io?.emit('meta_status', { text: 'Scanning markets...', stage: 'scanning' });
@@ -110,33 +130,150 @@ class DealEngine {
       }
     }
 
-    const noise = base * 0.002 * (Math.random() - 0.5);
+    const noise = base * 0.0006 * (Math.random() - 0.5);
     return base * (1 + biasPct / 100) + noise;
   }
 
+  private pickRegime(prev?: RegimeState | null): RegimeState {
+    const pool: { kind: MarketRegime; weight: number }[] = [
+      { kind: 'TRENDING', weight: 0.32 },
+      { kind: 'CHOPPY', weight: 0.28 },
+      { kind: 'HIGH_VOL', weight: 0.22 },
+      { kind: 'LOW_VOL', weight: 0.18 },
+    ];
+    const total = pool.reduce((sum, r) => sum + r.weight, 0);
+    let roll = Math.random() * total;
+    let chosen: MarketRegime = pool[0].kind;
+    for (const regime of pool) {
+      roll -= regime.weight;
+      if (roll <= 0) {
+        chosen = regime.kind;
+        break;
+      }
+    }
+
+    // Nudge away from repeating the exact same regime too often
+    if (prev && prev.kind === chosen && Math.random() < 0.45) {
+      const alt = pool.filter((r) => r.kind !== prev.kind);
+      chosen = alt[Math.floor(Math.random() * alt.length)].kind;
+    }
+
+    switch (chosen) {
+      case 'TRENDING': {
+        const direction =
+          prev?.kind === 'TRENDING' && prev.trendDirection && Math.random() < 0.55
+            ? prev.trendDirection
+            : Math.random() < 0.5
+              ? -1
+              : 1;
+        return {
+          kind: 'TRENDING',
+          driftBpsPerSec: randomBetween(2.5, 6.5),
+          noiseBps: randomBetween(6, 14),
+          wickBps: randomBetween(12, 26),
+          volumeBase: randomBetween(110, 190),
+          volumeJitter: randomBetween(40, 90),
+          meanRevert: 0.12,
+          trendDirection: direction,
+        };
+      }
+      case 'HIGH_VOL':
+        return {
+          kind: 'HIGH_VOL',
+          driftBpsPerSec: randomBetween(-0.6, 0.6),
+          noiseBps: randomBetween(18, 40),
+          wickBps: randomBetween(30, 70),
+          volumeBase: randomBetween(160, 260),
+          volumeJitter: randomBetween(70, 140),
+          meanRevert: 0.18,
+        };
+      case 'CHOPPY':
+        return {
+          kind: 'CHOPPY',
+          driftBpsPerSec: randomBetween(-0.4, 0.4),
+          noiseBps: randomBetween(8, 18),
+          wickBps: randomBetween(10, 20),
+          volumeBase: randomBetween(70, 140),
+          volumeJitter: randomBetween(30, 70),
+          meanRevert: 0.28,
+        };
+      case 'LOW_VOL':
+      default:
+        return {
+          kind: 'LOW_VOL',
+          driftBpsPerSec: randomBetween(-0.2, 0.2),
+          noiseBps: randomBetween(2, 6),
+          wickBps: randomBetween(6, 12),
+          volumeBase: randomBetween(35, 80),
+          volumeJitter: randomBetween(14, 40),
+          meanRevert: 0.34,
+        };
+    }
+  }
+
+  private scheduleRegime(now: number = Date.now()) {
+    this.regime = this.pickRegime(this.regime);
+    this.nextRegimeSwitch = now + randomBetween(12000, 24000);
+    this.log(`Regime -> ${this.regime.kind}`);
+  }
+
+  private maybeRotateRegime(now: number) {
+    if (!this.regime || now >= this.nextRegimeSwitch || Math.random() < 0.003) {
+      this.scheduleRegime(now);
+    }
+  }
+
   private generateTick(deal: Deal & { jumps: DealJump[] }) {
-    const elapsedSec = (Date.now() - this.startTime) / 1000;
-    const price = this.computeScenarioPrice(deal, elapsedSec);
-    const lastCandle = this.candles[this.candles.length - 1];
     const now = Date.now();
+    const elapsedSec = (now - this.startTime) / 1000;
+    this.maybeRotateRegime(now);
+
+    const anchorPrice = this.computeScenarioPrice(deal, elapsedSec);
+    const prevPrice = this.price || anchorPrice;
+    const dtSec = Math.max((now - (this.lastTickAt || now)) / 1000, 0.05);
+    this.lastTickAt = now;
+
+    const regime = this.regime ?? this.pickRegime();
+    const driftDirection = regime.kind === 'TRENDING' ? regime.trendDirection ?? 1 : 1;
+    const driftTerm = anchorPrice * ((regime.driftBpsPerSec * driftDirection * dtSec) / 10000);
+    const noiseScale = Math.sqrt(dtSec * 4);
+    const noiseTerm = anchorPrice * (regime.noiseBps / 10000) * (Math.random() - 0.5) * 2 * noiseScale;
+    const pullTerm = (anchorPrice - prevPrice) * regime.meanRevert * Math.min(dtSec * 1.1, 1);
+
+    const unclampedPrice = prevPrice + pullTerm + driftTerm + noiseTerm;
+    const maxJump = Math.max(prevPrice * 0.25, anchorPrice * 0.1);
+    const boundedPrice = Math.min(Math.max(unclampedPrice, prevPrice - maxJump), prevPrice + maxJump);
+    const price = Math.max(anchorPrice * 0.2, boundedPrice);
+
+    const wickSwing =
+      (regime.wickBps / 10000) *
+      (Math.random() - 0.5) *
+      2 *
+      (Math.random() < (regime.kind === 'HIGH_VOL' ? 0.6 : 0.35) ? 3 : 1.5);
+    const wickPrice = Math.max(anchorPrice * 0.15, price * (1 + wickSwing));
+
+    const lastCandle = this.candles[this.candles.length - 1];
     if (!lastCandle || now - lastCandle.time >= 1000) {
+      const vol = regime.volumeBase + Math.random() * regime.volumeJitter;
       this.candles.push({
         time: now,
         open: price,
-        high: price,
-        low: price,
+        high: Math.max(price, wickPrice),
+        low: Math.min(price, wickPrice),
         close: price,
-        volume: Math.random() * 100 + 50,
+        volume: Math.max(5, vol),
       });
     } else {
-      lastCandle.high = Math.max(lastCandle.high, price);
-      lastCandle.low = Math.min(lastCandle.low, price);
+      lastCandle.high = Math.max(lastCandle.high, wickPrice, price);
+      lastCandle.low = Math.min(lastCandle.low, wickPrice, price);
       lastCandle.close = price;
-      lastCandle.volume += Math.random() * 20;
+      const incrementalVolume = regime.volumeBase * 0.08 + Math.random() * (regime.volumeJitter * 0.25);
+      lastCandle.volume += Math.max(0, incrementalVolume);
     }
+
     this.price = price;
     const io = getIO();
-    io?.emit('price_tick', { timestamp: now, price, candle: this.candles[this.candles.length - 1] });
+    io?.emit('price_tick', { timestamp: now, price, candle: this.candles[this.candles.length - 1], regime: regime.kind });
   }
 
   private emitSignals(deal: Deal & { jumps: DealJump[] }) {
@@ -168,6 +305,9 @@ class DealEngine {
     if (this.candleTimer) clearInterval(this.candleTimer);
     this.tickTimer = null;
     this.candleTimer = null;
+    this.regime = null;
+    this.nextRegimeSwitch = 0;
+    this.lastTickAt = 0;
     await prisma.deal.update({ where: { id: dealId }, data: { status: 'FINISHED' } }).catch(() => null);
     const io = getIO();
     io?.emit('deal_state', { status: 'FINISHED', dealId });

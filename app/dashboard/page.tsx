@@ -1,7 +1,17 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState, CSSProperties } from 'react';
-import type { IChartApi, ISeriesApi, CandlestickData, HistogramData, LineData, Time, UTCTimestamp } from 'lightweight-charts';
+import type {
+  IChartApi,
+  ISeriesApi,
+  CandlestickData,
+  HistogramData,
+  LineData,
+  Time,
+  UTCTimestamp,
+  ISeriesMarkersPluginApi,
+  SeriesMarker,
+} from 'lightweight-charts';
 import io from 'socket.io-client';
 
 type Wallet = { cashBalance: number; equity: number; liveEquity?: number; positionValue?: number; unrealizedPnl?: number; pnlTotal: number };
@@ -48,7 +58,7 @@ export default function DashboardPage() {
   const chartRef = useRef<HTMLDivElement>(null);
   const chartApi = useRef<IChartApi | null>(null);
   const candleSeries = useRef<ISeriesApi<'Candlestick'> | null>(null);
-  const markersApi = useRef<{ setMarkers: (markers: unknown[]) => void } | null>(null);
+
   const volumeSeries = useRef<ISeriesApi<'Histogram'> | null>(null);
   const ema20Series = useRef<ISeriesApi<'Line'> | null>(null);
   const ema50Series = useRef<ISeriesApi<'Line'> | null>(null);
@@ -225,7 +235,7 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!candleSeries.current) return;
-    const markers = trades.slice(0, 30).map((t) => {
+    const markers: SeriesMarker<Time>[] = trades.slice(0, 30).map((t) => {
       const eventSec = Math.floor(new Date(t.time).getTime() / 1000);
       const candleTime = nearestCandleTime(candlesRef.current, eventSec);
       return {

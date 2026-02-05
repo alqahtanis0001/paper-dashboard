@@ -3,8 +3,10 @@ import { authErrorResponse, requireUserSession } from '@/lib/auth';
 import { getWallet } from '@/lib/wallet';
 import { prisma } from '@/lib/prisma';
 import { dealEngine } from '@/lib/engine/dealEngine';
+import { logServerAction } from '@/lib/serverLogger';
 
 export async function GET(req: NextRequest) {
+  logServerAction('wallet.get', 'start');
   try {
     await requireUserSession(req);
   } catch (error) {
@@ -26,6 +28,7 @@ export async function GET(req: NextRequest) {
 
   const liveEquity = wallet.cashBalance + positionValue;
 
+  logServerAction('wallet.get', 'success', { hasOpenPosition: !!openPosition, tradesCount: trades.length });
   return NextResponse.json({
     wallet: {
       ...wallet,

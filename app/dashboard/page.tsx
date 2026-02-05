@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, CSSProperties } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, CSSProperties } from 'react';
 import type {
   IChartApi,
   ISeriesApi,
@@ -13,6 +13,14 @@ import type {
   SeriesMarker,
 } from 'lightweight-charts';
 import io from 'socket.io-client';
+import {
+  GRAPH_MODES,
+  GRAPH_TIMEFRAMES,
+  type GraphMode,
+  type GraphTimeframe,
+  normalizeGraphMode,
+  normalizeGraphTimeframe,
+} from '@/lib/engine/graphModes';
 
 type Wallet = { cashBalance: number; equity: number; liveEquity?: number; positionValue?: number; unrealizedPnl?: number; pnlTotal: number };
 type Trade = {
@@ -42,27 +50,8 @@ type ChartPreference = {
 type ChartBootstrapResponse = {
   candles: { time: number; open: number; high: number; low: number; close: number; volume: number }[];
   symbol: string;
+  timeframe?: string;
 };
-
-const SYMBOL_OPTIONS = [
-  'AUTO',
-  'BTC/USDT',
-  'ETH/USDT',
-  'SOL/USDT',
-  'BNB/USDT',
-  'XRP/USDT',
-  'ADA/USDT',
-  'DOGE/USDT',
-  'AVAX/USDT',
-  'LINK/USDT',
-  'DOT/USDT',
-  'MATIC/USDT',
-  'LTC/USDT',
-  'BCH/USDT',
-  'ATOM/USDT',
-  'UNI/USDT',
-  'TRX/USDT',
-] as const;
 
 const nearestCandleTime = (candles: CandlestickData<Time>[], tsSec: number) => {
   if (!candles.length) return tsSec as UTCTimestamp;
@@ -105,10 +94,12 @@ export default function DashboardPage() {
   const [sellPercent, setSellPercent] = useState(100);
   const [warning, setWarning] = useState('');
   const [tooltip, setTooltip] = useState('');
-  const [selectedSymbol, setSelectedSymbol] = useState('AUTO');
-  const [timeframe, setTimeframe] = useState('1s');
+  const [selectedSymbol, setSelectedSymbol] = useState<GraphMode>('AUTO');
+  const [timeframe, setTimeframe] = useState<GraphTimeframe>('1s');
   const [zoomLogical, setZoomLogical] = useState<number | undefined>(undefined);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ ai: false, tape: false, activity: false });
+  const [prefHydrated, setPrefHydrated] = useState(false);
+  const [chartReady, setChartReady] = useState(false);
 
   const fetchWallet = async () => {
     const res = await fetch('/api/wallet');
@@ -129,6 +120,65 @@ export default function DashboardPage() {
     }
   };
 
+  const applyDerivedIndicators = useCallback((nextCandles: CandlestickData<Time>[]) => {
+    const closes = nextCandles.map((candle) => candle.close);
+    const ema = (period: number) =>
+      closes.map((_, index) => {
+        const start = Math.max(0, index - period + 1);
+        const sample = closes.slice(start, index + 1);
+        return sample.reduce((acc, value) => acc + value, 0) / sample.length;
+      });
+
+    const ema20 = ema(20);
+    const ema50 = ema(50);
+    ema20Series.current?.setData(nextCandles.map((candle, index) => ({ time: candle.time, value: ema20[index] } as LineData)));
+    ema50Series.current?.setData(nextCandles.map((candle, index) => ({ time: candle.time, value: ema50[index] } as LineData)));
+
+    const atr = nextCandles.slice(-14).reduce((acc, candle) => acc + (candle.high - candle.low), 0) / Math.max(1, Math.min(nextCandles.length, 14));
+    upperBandSeries.current?.setData(nextCandles.map((candle, index) => ({ time: candle.time, value: ema20[index] + atr } as LineData)));
+    lowerBandSeries.current?.setData(nextCandles.map((candle, index) => ({ time: candle.time, value: ema20[index] - atr } as LineData)));
+  }, []);
+
+  const applyBootstrapData = useCallback((bootstrap: ChartBootstrapResponse | null, fitContent: boolean) => {
+    if (!bootstrap) return;
+
+    const nextSymbol = normalizeGraphMode(bootstrap.symbol);
+    const nextTimeframe = normalizeGraphTimeframe(bootstrap.timeframe);
+    setSelectedSymbol((prev) => (prev === nextSymbol ? prev : nextSymbol));
+    setTimeframe((prev) => (prev === nextTimeframe ? prev : nextTimeframe));
+
+    const seedCandles = bootstrap.candles.map((candle) => ({
+      time: (candle.time / 1000) as UTCTimestamp,
+      open: candle.open,
+      high: candle.high,
+      low: candle.low,
+      close: candle.close,
+    }));
+
+    candlesRef.current = seedCandles;
+    candleSeries.current?.setData(seedCandles);
+    volumeSeries.current?.setData(
+      bootstrap.candles.map((candle) => ({
+        time: (candle.time / 1000) as UTCTimestamp,
+        value: candle.volume,
+        color: candle.close >= candle.open ? 'rgba(60,255,141,0.4)' : 'rgba(255,92,141,0.4)',
+      } as HistogramData)),
+    );
+
+    if (seedCandles.length === 0) {
+      ema20Series.current?.setData([]);
+      ema50Series.current?.setData([]);
+      upperBandSeries.current?.setData([]);
+      lowerBandSeries.current?.setData([]);
+      return;
+    }
+
+    applyDerivedIndicators(seedCandles);
+    if (fitContent) {
+      chartApi.current?.timeScale().fitContent();
+    }
+  }, [applyDerivedIndicators]);
+
   useEffect(() => {
     fetchWallet();
     fetchActivity();
@@ -145,15 +195,17 @@ export default function DashboardPage() {
       .then((data: { preference?: ChartPreference } | null) => {
         const pref = data?.preference;
         if (!pref) return;
-        if (pref.selectedSymbol) setSelectedSymbol(pref.selectedSymbol);
-        if (pref.timeframe) setTimeframe(pref.timeframe);
+        if (pref.selectedSymbol) setSelectedSymbol(normalizeGraphMode(pref.selectedSymbol));
+        if (pref.timeframe) setTimeframe(normalizeGraphTimeframe(pref.timeframe));
         if (typeof pref.zoomLogical === 'number') setZoomLogical(pref.zoomLogical);
         if (pref.collapsedJson) setCollapsed({ ai: false, tape: false, activity: false, ...pref.collapsedJson });
       })
-      .catch(() => null);
+      .catch(() => null)
+      .finally(() => setPrefHydrated(true));
   }, []);
 
   useEffect(() => {
+    if (!prefHydrated) return;
     const timer = setTimeout(() => {
       void fetch('/api/chart-state', {
         method: 'POST',
@@ -162,7 +214,7 @@ export default function DashboardPage() {
       }).catch(() => null);
     }, 350);
     return () => clearTimeout(timer);
-  }, [selectedSymbol, timeframe, zoomLogical, collapsed]);
+  }, [selectedSymbol, timeframe, zoomLogical, collapsed, prefHydrated]);
 
   useEffect(() => {
     const pingWebsite = () => {
@@ -225,50 +277,15 @@ export default function DashboardPage() {
       const bootstrap = await fetch('/api/chart', { cache: 'no-store' })
         .then(async (res) => (res.ok ? (res.json() as Promise<ChartBootstrapResponse>) : null))
         .catch(() => null);
-
-      if (bootstrap?.symbol) {
-        setSelectedSymbol(bootstrap.symbol);
-      }
-
-      if (bootstrap?.candles?.length) {
-        const seedCandles = bootstrap.candles.map((c) => ({
-          time: (c.time / 1000) as UTCTimestamp,
-          open: c.open,
-          high: c.high,
-          low: c.low,
-          close: c.close,
-        }));
-        candlesRef.current = seedCandles;
-        candleSeries.current?.setData(seedCandles);
-        volumeSeries.current?.setData(
-          bootstrap.candles.map((c) => ({
-            time: (c.time / 1000) as UTCTimestamp,
-            value: c.volume,
-            color: c.close >= c.open ? 'rgba(60,255,141,0.4)' : 'rgba(255,92,141,0.4)',
-          } as HistogramData)),
-        );
-
-        const closes = seedCandles.map((x) => x.close);
-        const ema = (period: number) => closes.map((_, i) => {
-          const start = Math.max(0, i - period + 1);
-          const arr = closes.slice(start, i + 1);
-          return arr.reduce((a, b) => a + b, 0) / arr.length;
-        });
-        const ema20 = ema(20);
-        const ema50 = ema(50);
-        ema20Series.current?.setData(seedCandles.map((x, i) => ({ time: x.time, value: ema20[i] } as LineData)));
-        ema50Series.current?.setData(seedCandles.map((x, i) => ({ time: x.time, value: ema50[i] } as LineData)));
-        const atr =
-          seedCandles.slice(-14).reduce((acc, v) => acc + (v.high - v.low), 0) /
-          Math.max(1, Math.min(seedCandles.length, 14));
-        upperBandSeries.current?.setData(seedCandles.map((x, i) => ({ time: x.time, value: ema20[i] + atr } as LineData)));
-        lowerBandSeries.current?.setData(seedCandles.map((x, i) => ({ time: x.time, value: ema20[i] - atr } as LineData)));
-        chart.timeScale().fitContent();
-      }
+      applyBootstrapData(bootstrap, true);
+      setChartReady(true);
 
       await fetch('/api/socket').catch(() => null);
       const socket = io('', { path: '/api/socket' });
-      socket.on('market_selected', (payload: { symbol: string }) => setSelectedSymbol(payload.symbol ?? 'AUTO'));
+      socket.on('market_selected', (payload: { symbol?: string; timeframe?: string }) => {
+        if (payload.symbol) setSelectedSymbol(normalizeGraphMode(payload.symbol));
+        if (payload.timeframe) setTimeframe(normalizeGraphTimeframe(payload.timeframe));
+      });
       socket.on('price_tick', (payload: { candle: { time: number; open: number; high: number; low: number; close: number; volume: number } }) => {
         const c = payload.candle;
         const item = { time: (c.time / 1000) as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close };
@@ -277,20 +294,7 @@ export default function DashboardPage() {
 
         const next = [...candlesRef.current.filter((x) => x.time !== item.time), item].slice(-250);
         candlesRef.current = next;
-
-        const closes = next.map((x) => x.close);
-        const ema = (period: number) => closes.map((_, i) => {
-          const start = Math.max(0, i - period + 1);
-          const arr = closes.slice(start, i + 1);
-          return arr.reduce((a, b) => a + b, 0) / arr.length;
-        });
-        const ema20 = ema(20);
-        const ema50 = ema(50);
-        ema20Series.current?.setData(next.map((x, i) => ({ time: x.time, value: ema20[i] } as LineData)));
-        ema50Series.current?.setData(next.map((x, i) => ({ time: x.time, value: ema50[i] } as LineData)));
-        const atr = next.slice(-14).reduce((acc, v) => acc + (v.high - v.low), 0) / Math.max(1, Math.min(next.length, 14));
-        upperBandSeries.current?.setData(next.map((x, i) => ({ time: x.time, value: ema20[i] + atr } as LineData)));
-        lowerBandSeries.current?.setData(next.map((x, i) => ({ time: x.time, value: ema20[i] - atr } as LineData)));
+        applyDerivedIndicators(next);
       });
       socket.on('ai_signals', (payload: { signals: ModelSignal[]; meta: Meta; hitRates: { meta: number; agents: Record<string, number> } }) => {
         setSignals(payload.signals);
@@ -301,13 +305,31 @@ export default function DashboardPage() {
       disconnect = () => {
         socket.disconnect();
         markersApi.current = null;
+        setChartReady(false);
         chart.remove();
       };
     };
     void setup();
 
     return () => disconnect?.();
-  }, []);
+  }, [applyBootstrapData, applyDerivedIndicators]);
+
+  useEffect(() => {
+    if (!chartReady || !prefHydrated) return;
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      const params = new URLSearchParams({ selectedSymbol, timeframe });
+      void fetch(`/api/chart?${params.toString()}`, { cache: 'no-store', signal: controller.signal })
+        .then(async (res) => (res.ok ? (res.json() as Promise<ChartBootstrapResponse>) : null))
+        .then((bootstrap) => applyBootstrapData(bootstrap, false))
+        .catch(() => null);
+    }, 180);
+
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [selectedSymbol, timeframe, chartReady, prefHydrated, applyBootstrapData]);
 
   useEffect(() => {
     if (!chartApi.current || typeof zoomLogical !== 'number') return;
@@ -375,12 +397,16 @@ export default function DashboardPage() {
 
       <div className="glass" style={{ padding: 12 }}>
         <div style={styles.controls}>
-          <select value={selectedSymbol} onChange={(e) => setSelectedSymbol(e.target.value)} style={styles.input}>
-            {SYMBOL_OPTIONS.map((symbol) => (
+          <select value={selectedSymbol} onChange={(e) => setSelectedSymbol(normalizeGraphMode(e.target.value))} style={styles.input}>
+            {GRAPH_MODES.map((symbol) => (
               <option key={symbol} value={symbol}>{symbol}</option>
             ))}
           </select>
-          <select value={timeframe} onChange={(e) => setTimeframe(e.target.value)} style={styles.input}><option value="1s">1s</option><option value="5s">5s</option><option value="15s">15s</option></select>
+          <select value={timeframe} onChange={(e) => setTimeframe(normalizeGraphTimeframe(e.target.value))} style={styles.input}>
+            {GRAPH_TIMEFRAMES.map((value) => (
+              <option key={value} value={value}>{value}</option>
+            ))}
+          </select>
         </div>
         <div ref={chartRef} style={{ width: '100%', height: 430 }} />
         <div style={{ color: 'var(--muted)', marginTop: 6 }}>{tooltip || meta.reason}</div>

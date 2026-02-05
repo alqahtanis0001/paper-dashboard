@@ -3,6 +3,7 @@ import { authErrorResponse, requireUserSession } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
 import { z } from 'zod';
 import { logServerAction } from '@/lib/serverLogger';
+import { dealEngine } from '@/lib/engine/dealEngine';
 
 const bodySchema = z.object({
   selectedSymbol: z.string().optional(),
@@ -16,6 +17,9 @@ export async function GET(req: NextRequest) {
   try {
     const session = await requireUserSession(req);
     const pref = await prisma.chartPreference.findUnique({ where: { sessionId: session.id } });
+    if (pref) {
+      dealEngine.setChartPreferences(pref.selectedSymbol, pref.timeframe);
+    }
     logServerAction('chartState.get', 'success', { found: !!pref });
     return NextResponse.json({ preference: pref });
   } catch (error) {
@@ -51,6 +55,8 @@ export async function POST(req: NextRequest) {
         collapsedJson: parsed.data.collapsed,
       },
     });
+
+    dealEngine.setChartPreferences(parsed.data.selectedSymbol, parsed.data.timeframe);
 
     logServerAction('chartState.post', 'success', { sessionId: session.id });
     return NextResponse.json({ preference: pref });

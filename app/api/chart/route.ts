@@ -9,8 +9,15 @@ export async function GET(req: NextRequest) {
     return authErrorResponse(error);
   }
 
+  const selectedSymbol = req.nextUrl.searchParams.get('selectedSymbol');
+  const timeframe = req.nextUrl.searchParams.get('timeframe');
+  if (selectedSymbol || timeframe) {
+    dealEngine.setChartPreferences(selectedSymbol, timeframe);
+  }
+
   return NextResponse.json({
     candles: dealEngine.getRecentCandles(250),
     symbol: dealEngine.getSelectedSymbol(),
+    timeframe: dealEngine.getSelectedTimeframe(),
   });
 }

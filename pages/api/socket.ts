@@ -30,6 +30,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponseServerI
       path: '/api/socket',
       cors: { origin: '*' },
     });
+    io.on('connection', (socket) => {
+      const controlState = dealEngine.getControlState();
+      socket.emit('control_state', controlState);
+      socket.emit('meta_status', controlState.metaStatus);
+    });
     res.socket.server.io = io;
     setIO(io);
     logServerAction('socket.handler', 'success', { initialized: true });

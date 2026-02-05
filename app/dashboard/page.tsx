@@ -160,6 +160,7 @@ export default function DashboardPage() {
   const [meta, setMeta] = useState<Meta>({ action: 'NO_TRADE', confidence: 0, reason: 'Waiting for data' });
   const [hitRates, setHitRates] = useState<{ meta: number; agents: Record<string, number> }>({ meta: 0, agents: {} });
   const [lastAiUpdate, setLastAiUpdate] = useState('');
+  const [metaStatusText, setMetaStatusText] = useState('');
   const [buyAmount, setBuyAmount] = useState('');
   const [sellPercent, setSellPercent] = useState(100);
   const [warning, setWarning] = useState('');
@@ -418,6 +419,30 @@ export default function DashboardPage() {
         if (payload.symbol) setSelectedSymbol(normalizeGraphMode(payload.symbol));
         if (payload.timeframe) setTimeframe(normalizeGraphTimeframe(payload.timeframe));
       });
+      socket.on('control_state', (payload: {
+        symbol?: string;
+        timeframe?: string;
+        metaStatus?: { text?: string };
+        ai?: {
+          signals?: ModelSignal[];
+          meta?: Meta;
+          hitRates?: { meta: number; agents: Record<string, number> };
+          lastSignalAt?: number | null;
+        };
+      }) => {
+        if (payload.symbol) setSelectedSymbol(normalizeGraphMode(payload.symbol));
+        if (payload.timeframe) setTimeframe(normalizeGraphTimeframe(payload.timeframe));
+        if (payload.metaStatus?.text) setMetaStatusText(payload.metaStatus.text);
+        if (payload.ai?.signals) setSignals(payload.ai.signals);
+        if (payload.ai?.meta) setMeta(payload.ai.meta);
+        if (payload.ai?.hitRates) setHitRates(payload.ai.hitRates);
+        if (typeof payload.ai?.lastSignalAt === 'number') {
+          setLastAiUpdate(new Date(payload.ai.lastSignalAt).toLocaleTimeString());
+        }
+      });
+      socket.on('meta_status', (payload: { text?: string }) => {
+        if (payload.text) setMetaStatusText(payload.text);
+      });
       socket.on('price_tick', (payload: { candle: { time: number; open: number; high: number; low: number; close: number; volume: number } }) => {
         const c = payload.candle;
         const item = { time: (c.time / 1000) as UTCTimestamp, open: c.open, high: c.high, low: c.low, close: c.close };
@@ -440,6 +465,7 @@ export default function DashboardPage() {
         setMeta(payload.meta);
         setHitRates(payload.hitRates);
         setLastAiUpdate(new Date().toLocaleTimeString());
+        setMetaStatusText(payload.meta.reason);
       });
     };
     void setup();
@@ -595,7 +621,7 @@ export default function DashboardPage() {
         <div style={styles.chartViewport}>
           <div ref={chartRef} style={styles.chartCanvas} />
         </div>
-        <div style={{ color: 'var(--muted)', marginTop: 6 }}>{tooltip || meta.reason}</div>
+        <div style={{ color: 'var(--muted)', marginTop: 6 }}>{tooltip || metaStatusText || meta.reason}</div>
       </div>
 
       <div style={styles.tradeGrid}>

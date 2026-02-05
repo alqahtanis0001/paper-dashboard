@@ -2,7 +2,16 @@
 
 import { CSSProperties, FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import dayjs from 'dayjs';
-import { NON_AUTO_GRAPH_MODES } from '@/lib/engine/graphModes';
+import io, { type Socket } from 'socket.io-client';
+import {
+  GRAPH_MODES,
+  GRAPH_TIMEFRAMES,
+  NON_AUTO_GRAPH_MODES,
+  type GraphMode,
+  type GraphTimeframe,
+  normalizeGraphMode,
+  normalizeGraphTimeframe,
+} from '@/lib/engine/graphModes';
 
 type DealStatus = 'SCHEDULED' | 'RUNNING' | 'FINISHED';
 
@@ -47,6 +56,28 @@ type DealFormState = {
   dropMagnitudePct: number;
 };
 
+type AiSignal = {
+  model: string;
+  signal: 'BUY' | 'SELL' | 'NO_TRADE';
+  confidence: number;
+  reasons: string[];
+};
+
+type ControlState = {
+  symbol: string;
+  selectedGraphMode: GraphMode;
+  timeframe: GraphTimeframe;
+  activeDealId: string | null;
+  hasRunningDeal: boolean;
+  metaStatus: { text: string; stage: string };
+  ai: {
+    signals: AiSignal[];
+    meta: { action: 'BUY' | 'SELL' | 'NO_TRADE'; confidence: number; reason: string };
+    hitRates: { meta: number; agents: Record<string, number> };
+    lastSignalAt: number | null;
+  };
+};
+
 const CHAIN_PRESETS: Record<string, { chainName: string; basePrice: number }> = {
   'BTC/USDT': { chainName: 'Bitcoin', basePrice: 62000 },
   'ETH/USDT': { chainName: 'Ethereum', basePrice: 3200 },
@@ -79,6 +110,9 @@ const formatMoney = (amount: number) =>
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
+const formatClock = (value: number | null | undefined) => (typeof value === 'number' ? dayjs(value).format('HH:mm:ss') : '--');
+const metaActionColor = (action: 'BUY' | 'SELL' | 'NO_TRADE' | undefined) =>
+  action === 'BUY' ? '#5df3a6' : action === 'SELL' ? '#ff5c8d' : '#ffd166';
 
 const defaultForm = (): DealFormState => ({
   symbol: 'BTC/USDT',
@@ -108,6 +142,10 @@ export default function AdminPage() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [statusFilter, setStatusFilter] = useState<'ALL' | DealStatus>('ALL');
   const [search, setSearch] = useState('');
+  const [controlState, setControlState] = useState<ControlState | null>(null);
+  const [controlSymbol, setControlSymbol] = useState<GraphMode>('AUTO');
+  const [controlTimeframe, setControlTimeframe] = useState<GraphTimeframe>('1s');
+  const [syncingControl, setSyncingControl] = useState(false);
 
   const [form, setForm] = useState<DealFormState>(defaultForm());
   const [jumps, setJumps] = useState<JumpDraft[]>([{ riseDelaySec: 30, riseMagnitudePct: 12, holdSec: 8 }]);
@@ -146,10 +184,31 @@ export default function AdminPage() {
     setWithdrawals(body.requests ?? []);
   }, []);
 
+  const applyControlState = useCallback((next: ControlState) => {
+    setControlState(next);
+    setControlSymbol(normalizeGraphMode(next.selectedGraphMode));
+    setControlTimeframe(normalizeGraphTimeframe(next.timeframe));
+  }, []);
+
+  const loadControlState = useCallback(async () => {
+    const res = await fetch('/api/admin/control-state', { cache: 'no-store' });
+    if (res.status === 401) {
+      setAuthed(false);
+      setError('Admin session expired. Please log in again.');
+      return;
+    }
+    if (!res.ok) {
+      setError('Failed to load control state.');
+      return;
+    }
+    const body = (await res.json()) as { controlState?: ControlState };
+    if (body.controlState) applyControlState(body.controlState);
+  }, [applyControlState]);
+
   const refreshAll = useCallback(async () => {
     setError('');
-    await Promise.all([loadDeals(), loadWithdrawals()]);
-  }, [loadDeals, loadWithdrawals]);
+    await Promise.all([loadDeals(), loadWithdrawals(), loadControlState()]);
+  }, [loadDeals, loadWithdrawals, loadControlState]);
 
   useEffect(() => {
     if (!authed || !autoRefresh) return;
@@ -158,6 +217,45 @@ export default function AdminPage() {
     }, 10000);
     return () => clearInterval(timer);
   }, [authed, autoRefresh, refreshAll]);
+
+  useEffect(() => {
+    if (!authed) return;
+    let disposed = false;
+    let socket: Socket | null = null;
+
+    const setup = async () => {
+      await fetch('/api/socket').catch(() => null);
+      if (disposed) return;
+
+      socket = io('', { path: '/api/socket' });
+      socket.on('control_state', (payload: ControlState) => {
+        applyControlState(payload);
+      });
+      socket.on('market_selected', (payload: { symbol?: string; timeframe?: string }) => {
+        if (payload.symbol) setControlSymbol(normalizeGraphMode(payload.symbol));
+        if (payload.timeframe) setControlTimeframe(normalizeGraphTimeframe(payload.timeframe));
+      });
+      socket.on('meta_status', (payload: { text?: string; stage?: string }) => {
+        if (!payload.text && !payload.stage) return;
+        setControlState((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            metaStatus: {
+              text: payload.text ?? prev.metaStatus.text,
+              stage: payload.stage ?? prev.metaStatus.stage,
+            },
+          };
+        });
+      });
+    };
+
+    void setup();
+    return () => {
+      disposed = true;
+      socket?.disconnect();
+    };
+  }, [authed, applyControlState]);
 
   const login = async (e: FormEvent) => {
     e.preventDefault();
@@ -184,6 +282,34 @@ export default function AdminPage() {
 
   const setStartOffset = (mins: number) => {
     setForm((prev) => ({ ...prev, startTimeLocal: nextStartLocal(mins) }));
+  };
+
+  const syncControlState = async () => {
+    setError('');
+    setInfo('');
+    setSyncingControl(true);
+
+    const res = await fetch('/api/admin/control-state', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ selectedSymbol: controlSymbol, timeframe: controlTimeframe }),
+    });
+
+    setSyncingControl(false);
+    if (res.status === 401) {
+      setAuthed(false);
+      setError('Admin session expired. Please log in again.');
+      return;
+    }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setError(body.error ?? 'Control sync failed.');
+      return;
+    }
+
+    const body = (await res.json()) as { controlState?: ControlState };
+    if (body.controlState) applyControlState(body.controlState);
+    setInfo('Control state synchronized.');
   };
 
   const applySymbolPreset = (symbol: string) => {
@@ -404,6 +530,69 @@ export default function AdminPage() {
           {error || info}
         </div>
       )}
+
+      <div className="glass" style={styles.panel}>
+        <div style={styles.subHeaderRow}>
+          <h2 style={styles.sectionTitle}>Live Sync Control</h2>
+          <div style={styles.inlineControls}>
+            <button type="button" onClick={() => void loadControlState()} style={styles.quickBtn}>
+              Pull Live
+            </button>
+            <button type="button" onClick={() => void syncControlState()} disabled={syncingControl} style={styles.button}>
+              {syncingControl ? 'Syncing...' : 'Sync Admin -> Graph & AI'}
+            </button>
+          </div>
+        </div>
+
+        <div style={styles.syncGrid}>
+          <div>
+            <div style={styles.label}>Graph Mode</div>
+            <select style={styles.input} value={controlSymbol} onChange={(e) => setControlSymbol(normalizeGraphMode(e.target.value))}>
+              {GRAPH_MODES.map((mode) => (
+                <option key={mode} value={mode}>{mode}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <div style={styles.label}>Timeframe</div>
+            <select style={styles.input} value={controlTimeframe} onChange={(e) => setControlTimeframe(normalizeGraphTimeframe(e.target.value))}>
+              {GRAPH_TIMEFRAMES.map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
+            </select>
+          </div>
+
+          <div style={styles.syncStatCard}>
+            <div style={styles.label}>Live Symbol</div>
+            <strong>{controlState?.symbol ?? '--'}</strong>
+            <span style={styles.mutedText}>Selected Mode: {controlState?.selectedGraphMode ?? '--'}</span>
+          </div>
+
+          <div style={styles.syncStatCard}>
+            <div style={styles.label}>Execution</div>
+            <strong style={{ color: controlState?.hasRunningDeal ? '#5df3a6' : '#9cb7ff' }}>
+              {controlState?.hasRunningDeal ? 'RUNNING DEAL' : 'SYNTHETIC MARKET'}
+            </strong>
+            <span style={styles.mutedText}>Deal ID: {controlState?.activeDealId ?? 'None'}</span>
+          </div>
+        </div>
+
+        <div style={styles.syncBadges}>
+          <span style={{ ...styles.badge, color: metaActionColor(controlState?.ai.meta.action), borderColor: metaActionColor(controlState?.ai.meta.action) }}>
+            Meta {controlState?.ai.meta.action ?? 'NO_TRADE'}
+          </span>
+          <span style={styles.syncChip}>Meta Hit {controlState?.ai.hitRates.meta ?? 0}%</span>
+          <span style={styles.syncChip}>Signals {controlState?.ai.signals.length ?? 0}</span>
+          <span style={styles.syncChip}>AI Update {formatClock(controlState?.ai.lastSignalAt)}</span>
+        </div>
+        <div style={{ ...styles.mutedText, marginTop: 6 }}>
+          Status: {controlState?.metaStatus.text ?? 'Waiting for state...'}
+        </div>
+        <div style={{ ...styles.mutedText, marginTop: 4 }}>
+          Meta Reason: {controlState?.ai.meta.reason ?? 'No decision yet.'}
+        </div>
+      </div>
 
       <div style={styles.gridTwoCol}>
         <div className="glass" style={styles.panel}>
@@ -671,6 +860,36 @@ const styles: Record<string, CSSProperties> = {
     flexDirection: 'column',
     gap: 4,
     alignItems: 'flex-start',
+  },
+  syncGrid: {
+    marginTop: 10,
+    display: 'grid',
+    gap: 10,
+    gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))',
+  },
+  syncStatCard: {
+    border: '1px solid var(--border)',
+    borderRadius: 10,
+    background: 'rgba(15,23,43,0.55)',
+    padding: '0.75rem',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+  },
+  syncBadges: {
+    marginTop: 10,
+    display: 'flex',
+    gap: 8,
+    flexWrap: 'wrap',
+    alignItems: 'center',
+  },
+  syncChip: {
+    border: '1px solid var(--border)',
+    borderRadius: 999,
+    padding: '3px 9px',
+    fontSize: 12,
+    color: '#c7d6f6',
+    background: '#13203a',
   },
   notice: {
     borderRadius: 10,

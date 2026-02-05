@@ -1,6 +1,6 @@
 import { Deal, DealJump } from '@prisma/client';
 import { prisma } from '../prisma';
-import { buildSignals, aggregateSignals, type ModelSignal } from '../ai';
+import { buildSignals, aggregateSignals, type MetaDecision, type ModelSignal } from '../ai';
 import { getIO } from '../socketServer';
 import {
   type GraphMode,
@@ -57,6 +57,28 @@ type SyntheticModeState = {
   lastTickAt: number;
 };
 
+type MetaStatus = {
+  text: string;
+  stage: string;
+};
+
+type AiRuntimeSnapshot = {
+  signals: ModelSignal[];
+  meta: MetaDecision;
+  hitRates: { meta: number; agents: Record<string, number> };
+  lastSignalAt: number | null;
+};
+
+type EngineControlState = {
+  symbol: string;
+  selectedGraphMode: GraphMode;
+  timeframe: GraphTimeframe;
+  activeDealId: string | null;
+  hasRunningDeal: boolean;
+  metaStatus: MetaStatus;
+  ai: AiRuntimeSnapshot;
+};
+
 const randomBetween = (min: number, max: number) => min + Math.random() * (max - min);
 
 const buildModeRuntime = (): Record<NonAutoGraphMode, ModeRuntimeState> => {
@@ -94,6 +116,13 @@ class DealEngine {
   private modeRuntime: Record<NonAutoGraphMode, ModeRuntimeState> = buildModeRuntime();
   private syntheticActiveMode: NonAutoGraphMode = NON_AUTO_GRAPH_MODES[0];
   private syntheticModeStates: Partial<Record<NonAutoGraphMode, SyntheticModeState>> = {};
+  private metaStatus: MetaStatus = { text: 'Monitoring markets...', stage: 'idle' };
+  private aiRuntime: AiRuntimeSnapshot = {
+    signals: [],
+    meta: { action: 'NO_TRADE', confidence: 0, reason: 'Waiting for data' },
+    hitRates: { meta: 0, agents: {} },
+    lastSignalAt: null,
+  };
 
   constructor() {
     this.reseedSyntheticMarket(false);
@@ -107,6 +136,17 @@ class DealEngine {
 
   private static gaussianRandom() {
     return (Math.random() + Math.random() + Math.random() - 1.5) / 1.5;
+  }
+
+  private emitControlState() {
+    const io = getIO();
+    io?.emit('control_state', this.getControlState());
+  }
+
+  private setMetaStatus(text: string, stage: string) {
+    this.metaStatus = { text, stage };
+    const io = getIO();
+    io?.emit('meta_status', this.metaStatus);
   }
 
   private startWatcher() {
@@ -580,9 +620,10 @@ class DealEngine {
     this.candles = [];
     this.lastTickAt = Date.now();
     this.scheduleRegime();
+    this.setMetaStatus('Scanning markets...', 'scanning');
+    this.emitControlState();
 
     const io = getIO();
-    io?.emit('meta_status', { text: 'Scanning markets...', stage: 'scanning' });
 
     setTimeout(() => {
       io?.emit('market_selected', {
@@ -592,7 +633,8 @@ class DealEngine {
         startTime: deal.startTimeUtc,
         timeframe: this.selectedTimeframe,
       });
-      io?.emit('meta_status', { text: `Trade identified: ${deal.symbol} (${deal.chainName})`, stage: 'identified' });
+      this.setMetaStatus(`Trade identified: ${deal.symbol} (${deal.chainName})`, 'identified');
+      this.emitControlState();
     }, 1000);
 
     if (this.signalTimer) clearInterval(this.signalTimer);
@@ -703,6 +745,13 @@ class DealEngine {
       });
     }
 
+    this.aiRuntime = {
+      signals: signals.map((signal) => ({ ...signal, reasons: [...signal.reasons] })),
+      meta: { ...meta },
+      hitRates: { meta: hitRates.meta, agents: { ...hitRates.agents } },
+      lastSignalAt: Date.now(),
+    };
+
     const io = getIO();
     io?.emit('ai_signals', {
       signals,
@@ -710,6 +759,7 @@ class DealEngine {
       hitRates,
     });
     io?.emit('deal_state', { status: 'RUNNING', dealId: deal.id });
+    this.emitControlState();
   }
 
   private async finishDeal() {
@@ -727,7 +777,9 @@ class DealEngine {
     io?.emit('deal_state', { status: 'FINISHED', dealId });
 
     this.currentDeal = null;
+    this.setMetaStatus('Monitoring synthetic markets...', 'idle');
     this.reseedSyntheticMarket(true);
+    this.emitControlState();
   }
 
   setChartPreferences(inputMode?: string | null, inputTimeframe?: string | null) {
@@ -741,6 +793,7 @@ class DealEngine {
     const timeframeChanged = nextTimeframe !== this.selectedTimeframe;
 
     if (!modeChanged && !timeframeChanged) {
+      this.emitControlState();
       return { symbol: this.getSelectedSymbol(), timeframe: this.selectedTimeframe };
     }
 
@@ -759,7 +812,30 @@ class DealEngine {
       io?.emit('market_selected', { symbol: this.currentDeal.symbol, timeframe: this.selectedTimeframe, source: 'deal' });
     }
 
+    this.emitControlState();
     return { symbol: this.getSelectedSymbol(), timeframe: this.selectedTimeframe };
+  }
+
+  getControlState(): EngineControlState {
+    return {
+      symbol: this.getSelectedSymbol(),
+      selectedGraphMode: this.selectedGraphMode,
+      timeframe: this.selectedTimeframe,
+      activeDealId: this.currentDeal?.id ?? null,
+      hasRunningDeal: !!this.currentDeal,
+      metaStatus: { ...this.metaStatus },
+      ai: {
+        signals: this.aiRuntime.signals.map((signal) => ({ ...signal, reasons: [...signal.reasons] })),
+        meta: { ...this.aiRuntime.meta },
+        hitRates: { meta: this.aiRuntime.hitRates.meta, agents: { ...this.aiRuntime.hitRates.agents } },
+        lastSignalAt: this.aiRuntime.lastSignalAt,
+      },
+    };
+  }
+
+  notifyControlState() {
+    this.emitControlState();
+    return this.getControlState();
   }
 
   getCurrentPrice() {
@@ -822,6 +898,27 @@ class DealEngineDisabled {
     void inputMode;
     void inputTimeframe;
     return { symbol: DEFAULT_GRAPH_MODE, timeframe: DEFAULT_GRAPH_TIMEFRAME };
+  }
+
+  getControlState(): EngineControlState {
+    return {
+      symbol: DEFAULT_GRAPH_MODE,
+      selectedGraphMode: DEFAULT_GRAPH_MODE,
+      timeframe: DEFAULT_GRAPH_TIMEFRAME,
+      activeDealId: null,
+      hasRunningDeal: false,
+      metaStatus: { text: 'Engine disabled', stage: 'disabled' },
+      ai: {
+        signals: [],
+        meta: { action: 'NO_TRADE', confidence: 0, reason: 'Engine disabled' },
+        hitRates: { meta: 0, agents: {} },
+        lastSignalAt: null,
+      },
+    };
+  }
+
+  notifyControlState() {
+    return this.getControlState();
   }
 }
 

@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma';
 import { z } from 'zod';
 import { logAuditEvent } from '@/lib/audit';
 import { logServerAction } from '@/lib/serverLogger';
+import { dealEngine } from '@/lib/engine/dealEngine';
 
 const bodySchema = z.object({
   id: z.string().uuid(),
@@ -35,6 +36,11 @@ export async function POST(req: NextRequest) {
     },
     include: { jumps: { orderBy: { orderIndex: 'asc' } } },
   });
+
+  if (parsed.data.startNow) {
+    dealEngine.setChartPreferences(deal.symbol, dealEngine.getSelectedTimeframe());
+    dealEngine.notifyControlState();
+  }
 
   await logAuditEvent('deal_activated', 'ADMIN', { dealId: deal.id, startNow: !!parsed.data.startNow });
   logServerAction('admin.deal.activate', 'success', { dealId: deal.id, startNow: !!parsed.data.startNow });

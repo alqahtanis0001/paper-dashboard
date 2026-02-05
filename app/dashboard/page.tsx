@@ -53,6 +53,63 @@ type ChartBootstrapResponse = {
   timeframe?: string;
 };
 
+const BAND_MULTIPLIER = 1.85;
+
+const formatPrice = (value: number) => {
+  const abs = Math.abs(value);
+  if (!Number.isFinite(value)) return '--';
+  if (abs >= 10000) return value.toFixed(2);
+  if (abs >= 1000) return value.toFixed(3);
+  if (abs >= 1) return value.toFixed(4);
+  if (abs >= 0.01) return value.toFixed(5);
+  return value.toFixed(7);
+};
+
+const formatVolumeCompact = (value: number) => {
+  if (!Number.isFinite(value)) return '--';
+  const abs = Math.abs(value);
+  if (abs >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}B`;
+  if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
+  if (abs >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
+  return value.toFixed(2);
+};
+
+const computeEma = (values: number[], period: number) => {
+  if (!values.length) return [];
+  const alpha = 2 / (period + 1);
+  let prev = values[0];
+  return values.map((value, index) => {
+    if (index === 0) {
+      prev = value;
+      return value;
+    }
+    prev = prev + alpha * (value - prev);
+    return prev;
+  });
+};
+
+const computeAtr = (candles: CandlestickData<Time>[], period: number) => {
+  if (!candles.length) return [];
+  const trValues = candles.map((candle, index) => {
+    const prevClose = index === 0 ? candle.close : candles[index - 1].close;
+    const hl = candle.high - candle.low;
+    const hc = Math.abs(candle.high - prevClose);
+    const lc = Math.abs(candle.low - prevClose);
+    return Math.max(hl, hc, lc);
+  });
+
+  const alpha = 1 / Math.max(period, 1);
+  let prevAtr = trValues[0];
+  return trValues.map((value, index) => {
+    if (index === 0) {
+      prevAtr = value;
+      return value;
+    }
+    prevAtr = prevAtr + alpha * (value - prevAtr);
+    return prevAtr;
+  });
+};
+
 const nearestCandleTime = (candles: CandlestickData<Time>[], tsSec: number) => {
   if (!candles.length) return tsSec as UTCTimestamp;
   let nearest = candles[0].time as number;
@@ -82,6 +139,7 @@ export default function DashboardPage() {
   const buyInputRef = useRef<HTMLInputElement>(null);
   const sellInputRef = useRef<HTMLInputElement>(null);
   const candlesRef = useRef<CandlestickData<Time>[]>([]);
+  const volumesRef = useRef<Map<number, number>>(new Map());
   const zoomLogicalRef = useRef<number | undefined>(undefined);
 
   const [wallet, setWallet] = useState<Wallet | null>(null);
@@ -122,21 +180,18 @@ export default function DashboardPage() {
 
   const applyDerivedIndicators = useCallback((nextCandles: CandlestickData<Time>[]) => {
     const closes = nextCandles.map((candle) => candle.close);
-    const ema = (period: number) =>
-      closes.map((_, index) => {
-        const start = Math.max(0, index - period + 1);
-        const sample = closes.slice(start, index + 1);
-        return sample.reduce((acc, value) => acc + value, 0) / sample.length;
-      });
-
-    const ema20 = ema(20);
-    const ema50 = ema(50);
+    const ema20 = computeEma(closes, 20);
+    const ema50 = computeEma(closes, 50);
+    const atr14 = computeAtr(nextCandles, 14);
     ema20Series.current?.setData(nextCandles.map((candle, index) => ({ time: candle.time, value: ema20[index] } as LineData)));
     ema50Series.current?.setData(nextCandles.map((candle, index) => ({ time: candle.time, value: ema50[index] } as LineData)));
 
-    const atr = nextCandles.slice(-14).reduce((acc, candle) => acc + (candle.high - candle.low), 0) / Math.max(1, Math.min(nextCandles.length, 14));
-    upperBandSeries.current?.setData(nextCandles.map((candle, index) => ({ time: candle.time, value: ema20[index] + atr } as LineData)));
-    lowerBandSeries.current?.setData(nextCandles.map((candle, index) => ({ time: candle.time, value: ema20[index] - atr } as LineData)));
+    upperBandSeries.current?.setData(
+      nextCandles.map((candle, index) => ({ time: candle.time, value: ema20[index] + atr14[index] * BAND_MULTIPLIER } as LineData)),
+    );
+    lowerBandSeries.current?.setData(
+      nextCandles.map((candle, index) => ({ time: candle.time, value: Math.max(0.0000001, ema20[index] - atr14[index] * BAND_MULTIPLIER) } as LineData)),
+    );
   }, []);
 
   const applyBootstrapData = useCallback((bootstrap: ChartBootstrapResponse | null, fitContent: boolean) => {
@@ -156,6 +211,7 @@ export default function DashboardPage() {
     }));
 
     candlesRef.current = seedCandles;
+    volumesRef.current = new Map(bootstrap.candles.map((candle) => [Math.floor(candle.time / 1000), candle.volume]));
     candleSeries.current?.setData(seedCandles);
     volumeSeries.current?.setData(
       bootstrap.candles.map((candle) => ({
@@ -250,19 +306,57 @@ export default function DashboardPage() {
         layout: { background: { color: 'transparent' }, textColor: '#b8c7f0', attributionLogo: false },
         width: mount.clientWidth,
         height: mount.clientHeight || 430,
-        crosshair: { mode: 1 },
+        grid: {
+          vertLines: { color: 'rgba(120,140,180,0.13)' },
+          horzLines: { color: 'rgba(120,140,180,0.13)' },
+        },
+        rightPriceScale: {
+          borderColor: 'rgba(184,199,240,0.28)',
+          scaleMargins: { top: 0.08, bottom: 0.12 },
+        },
+        timeScale: {
+          borderColor: 'rgba(184,199,240,0.28)',
+          rightOffset: 2,
+          barSpacing: 9,
+          minBarSpacing: 3,
+          timeVisible: true,
+          secondsVisible: true,
+        },
+        crosshair: {
+          mode: 1,
+          vertLine: { labelBackgroundColor: '#1b3c6d' },
+          horzLine: { labelBackgroundColor: '#1b3c6d' },
+        },
         handleScroll: { mouseWheel: true, pressedMouseMove: true },
         handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
       });
       chartApi.current = chart;
-      candleSeries.current = chart.addSeries(CandlestickSeries, { upColor: '#3cff8d', downColor: '#ff5c8d', wickUpColor: '#3cff8d', wickDownColor: '#ff5c8d', borderVisible: false });
+      candleSeries.current = chart.addSeries(CandlestickSeries, {
+        upColor: '#3cff8d',
+        downColor: '#ff5c8d',
+        wickUpColor: '#3cff8d',
+        wickDownColor: '#ff5c8d',
+        borderVisible: false,
+        priceLineVisible: true,
+        lastValueVisible: true,
+      });
       markersApi.current = createSeriesMarkers(candleSeries.current, []);
       volumeSeries.current = chart.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceScaleId: '' });
       volumeSeries.current.priceScale().applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
-      ema20Series.current = chart.addSeries(LineSeries, { color: '#ffd166', lineWidth: 1 });
-      ema50Series.current = chart.addSeries(LineSeries, { color: '#6ea8ff', lineWidth: 1 });
-      upperBandSeries.current = chart.addSeries(LineSeries, { color: 'rgba(255,92,141,0.45)', lineWidth: 1 });
-      lowerBandSeries.current = chart.addSeries(LineSeries, { color: 'rgba(92,255,173,0.45)', lineWidth: 1 });
+      ema20Series.current = chart.addSeries(LineSeries, { color: '#ffd166', lineWidth: 2, lastValueVisible: false, priceLineVisible: false });
+      ema50Series.current = chart.addSeries(LineSeries, { color: '#6ea8ff', lineWidth: 2, lastValueVisible: false, priceLineVisible: false });
+      upperBandSeries.current = chart.addSeries(LineSeries, {
+        color: 'rgba(255,92,141,0.55)',
+        lineWidth: 1,
+        lastValueVisible: false,
+        priceLineVisible: false,
+      });
+      lowerBandSeries.current = chart.addSeries(LineSeries, {
+        color: 'rgba(92,255,173,0.55)',
+        lineWidth: 1,
+        lastValueVisible: false,
+        priceLineVisible: false,
+      });
 
       onResize = () => {
         if (!chart || !mount) return;
@@ -278,8 +372,14 @@ export default function DashboardPage() {
       chart.subscribeCrosshairMove((param) => {
         const c = param.seriesData.get(candleSeries.current! as never) as unknown as CandlestickData | undefined;
         if (!c) return setTooltip('');
+        const volume = volumesRef.current.get(Number(c.time));
+        const absChange = c.close - c.open;
         const pct = ((c.close - c.open) / c.open) * 100;
-        setTooltip(`O:${c.open.toFixed(2)} H:${c.high.toFixed(2)} L:${c.low.toFixed(2)} C:${c.close.toFixed(2)} ${pct.toFixed(2)}%`);
+        setTooltip(
+          `O:${formatPrice(c.open)} H:${formatPrice(c.high)} L:${formatPrice(c.low)} C:${formatPrice(c.close)} ` +
+          `Δ:${absChange >= 0 ? '+' : ''}${formatPrice(absChange)} (${pct.toFixed(2)}%) ` +
+          `V:${formatVolumeCompact(volume ?? Number.NaN)}`,
+        );
       });
 
       chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
@@ -314,6 +414,13 @@ export default function DashboardPage() {
 
         const next = [...candlesRef.current.filter((x) => x.time !== item.time), item].slice(-250);
         candlesRef.current = next;
+        const nextVolumes = new Map(volumesRef.current);
+        nextVolumes.set(Number(item.time), c.volume);
+        const keepTimes = new Set(next.map((candle) => Number(candle.time)));
+        for (const time of nextVolumes.keys()) {
+          if (!keepTimes.has(time)) nextVolumes.delete(time);
+        }
+        volumesRef.current = nextVolumes;
         applyDerivedIndicators(next);
       });
       socket.on('ai_signals', (payload: { signals: ModelSignal[]; meta: Meta; hitRates: { meta: number; agents: Record<string, number> } }) => {
@@ -337,6 +444,7 @@ export default function DashboardPage() {
       upperBandSeries.current = null;
       lowerBandSeries.current = null;
       chartApi.current = null;
+      volumesRef.current = new Map();
       chart?.remove();
       setChartReady(false);
     };
@@ -436,6 +544,12 @@ export default function DashboardPage() {
             ))}
           </select>
         </div>
+        <div style={styles.legendRow}>
+          <span style={{ ...styles.legendItem, color: '#ffd166' }}>EMA 20</span>
+          <span style={{ ...styles.legendItem, color: '#6ea8ff' }}>EMA 50</span>
+          <span style={{ ...styles.legendItem, color: 'rgba(255,92,141,0.85)' }}>Upper Band</span>
+          <span style={{ ...styles.legendItem, color: 'rgba(92,255,173,0.85)' }}>Lower Band</span>
+        </div>
         <div style={styles.chartViewport}>
           <div ref={chartRef} style={styles.chartCanvas} />
         </div>
@@ -491,6 +605,15 @@ const styles: Record<string, CSSProperties> = {
   page: { maxWidth: 1200, margin: '0 auto', padding: '1rem', display: 'flex', flexDirection: 'column', gap: 10 },
   row: { display: 'flex', gap: 16, padding: 12 },
   controls: { display: 'flex', gap: 10, marginBottom: 8 },
+  legendRow: { display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 8, alignItems: 'center' },
+  legendItem: {
+    fontSize: 11,
+    border: '1px solid var(--border)',
+    borderRadius: 999,
+    padding: '3px 8px',
+    background: 'rgba(15,23,43,0.8)',
+    letterSpacing: 0.3,
+  },
   chartViewport: {
     width: '100%',
     height: 430,
@@ -499,6 +622,7 @@ const styles: Record<string, CSSProperties> = {
     overflow: 'hidden',
     position: 'relative',
     isolation: 'isolate',
+    contain: 'layout paint size',
   },
   chartCanvas: { width: '100%', height: '100%', position: 'relative' },
   tradeGrid: { display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))' },

@@ -39,6 +39,11 @@ type ChartPreference = {
   collapsedJson?: Record<string, boolean> | null;
 };
 
+type ChartBootstrapResponse = {
+  candles: { time: number; open: number; high: number; low: number; close: number; volume: number }[];
+  symbol: string;
+};
+
 const SYMBOL_OPTIONS = [
   'AUTO',
   'BTC/USDT',
@@ -88,6 +93,7 @@ export default function DashboardPage() {
   const buyInputRef = useRef<HTMLInputElement>(null);
   const sellInputRef = useRef<HTMLInputElement>(null);
   const candlesRef = useRef<CandlestickData<Time>[]>([]);
+  const zoomLogicalRef = useRef<number | undefined>(undefined);
 
   const [wallet, setWallet] = useState<Wallet | null>(null);
   const [trades, setTrades] = useState<Trade[]>([]);
@@ -173,13 +179,17 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
+    zoomLogicalRef.current = zoomLogical;
+  }, [zoomLogical]);
+
+  useEffect(() => {
     let disconnect: (() => void) | undefined;
     const setup = async () => {
       const { createChart, CandlestickSeries, HistogramSeries, LineSeries, createSeriesMarkers } = await import('lightweight-charts');
       if (!chartRef.current) return;
 
       const chart = createChart(chartRef.current, {
-        layout: { background: { color: 'transparent' }, textColor: '#b8c7f0' },
+        layout: { background: { color: 'transparent' }, textColor: '#b8c7f0', attributionLogo: false },
         width: chartRef.current.clientWidth,
         height: 430,
         crosshair: { mode: 1 },
@@ -208,8 +218,52 @@ export default function DashboardPage() {
         setZoomLogical(range.to);
       });
 
-      if (typeof zoomLogical === 'number') {
-        chart.timeScale().setVisibleLogicalRange({ from: zoomLogical - 120, to: zoomLogical });
+      if (typeof zoomLogicalRef.current === 'number') {
+        chart.timeScale().setVisibleLogicalRange({ from: zoomLogicalRef.current - 120, to: zoomLogicalRef.current });
+      }
+
+      const bootstrap = await fetch('/api/chart', { cache: 'no-store' })
+        .then(async (res) => (res.ok ? (res.json() as Promise<ChartBootstrapResponse>) : null))
+        .catch(() => null);
+
+      if (bootstrap?.symbol) {
+        setSelectedSymbol(bootstrap.symbol);
+      }
+
+      if (bootstrap?.candles?.length) {
+        const seedCandles = bootstrap.candles.map((c) => ({
+          time: (c.time / 1000) as UTCTimestamp,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+        }));
+        candlesRef.current = seedCandles;
+        candleSeries.current?.setData(seedCandles);
+        volumeSeries.current?.setData(
+          bootstrap.candles.map((c) => ({
+            time: (c.time / 1000) as UTCTimestamp,
+            value: c.volume,
+            color: c.close >= c.open ? 'rgba(60,255,141,0.4)' : 'rgba(255,92,141,0.4)',
+          } as HistogramData)),
+        );
+
+        const closes = seedCandles.map((x) => x.close);
+        const ema = (period: number) => closes.map((_, i) => {
+          const start = Math.max(0, i - period + 1);
+          const arr = closes.slice(start, i + 1);
+          return arr.reduce((a, b) => a + b, 0) / arr.length;
+        });
+        const ema20 = ema(20);
+        const ema50 = ema(50);
+        ema20Series.current?.setData(seedCandles.map((x, i) => ({ time: x.time, value: ema20[i] } as LineData)));
+        ema50Series.current?.setData(seedCandles.map((x, i) => ({ time: x.time, value: ema50[i] } as LineData)));
+        const atr =
+          seedCandles.slice(-14).reduce((acc, v) => acc + (v.high - v.low), 0) /
+          Math.max(1, Math.min(seedCandles.length, 14));
+        upperBandSeries.current?.setData(seedCandles.map((x, i) => ({ time: x.time, value: ema20[i] + atr } as LineData)));
+        lowerBandSeries.current?.setData(seedCandles.map((x, i) => ({ time: x.time, value: ema20[i] - atr } as LineData)));
+        chart.timeScale().fitContent();
       }
 
       await fetch('/api/socket').catch(() => null);
@@ -253,6 +307,11 @@ export default function DashboardPage() {
     void setup();
 
     return () => disconnect?.();
+  }, []);
+
+  useEffect(() => {
+    if (!chartApi.current || typeof zoomLogical !== 'number') return;
+    chartApi.current.timeScale().setVisibleLogicalRange({ from: zoomLogical - 120, to: zoomLogical });
   }, [zoomLogical]);
 
   useEffect(() => {

@@ -404,6 +404,14 @@ class DealEngine {
   getActiveDealId() {
     return this.currentDeal?.id ?? null;
   }
+
+  getRecentCandles(limit = 250): Candle[] {
+    return this.candles.slice(-Math.max(1, limit));
+  }
+
+  getSelectedSymbol() {
+    return this.currentDeal?.symbol ?? 'AUTO';
+  }
 }
 
 // singleton
@@ -417,6 +425,12 @@ class DealEngineDisabled {
   }
   getRegimeVolatility() {
     return 0.5;
+  }
+  getRecentCandles() {
+    return [];
+  }
+  getSelectedSymbol() {
+    return 'AUTO';
   }
 }
 

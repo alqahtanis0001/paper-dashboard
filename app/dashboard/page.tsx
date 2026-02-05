@@ -12,7 +12,7 @@ import type {
   ISeriesMarkersPluginApi,
   SeriesMarker,
 } from 'lightweight-charts';
-import io from 'socket.io-client';
+import io, { type Socket } from 'socket.io-client';
 import {
   GRAPH_MODES,
   GRAPH_TIMEFRAMES,
@@ -235,15 +235,21 @@ export default function DashboardPage() {
   }, [zoomLogical]);
 
   useEffect(() => {
-    let disconnect: (() => void) | undefined;
+    let isDisposed = false;
+    let socket: Socket | null = null;
+    let chart: IChartApi | null = null;
+    let resizeObserver: ResizeObserver | null = null;
+    let onResize: (() => void) | null = null;
+
     const setup = async () => {
       const { createChart, CandlestickSeries, HistogramSeries, LineSeries, createSeriesMarkers } = await import('lightweight-charts');
-      if (!chartRef.current) return;
+      const mount = chartRef.current;
+      if (!mount || isDisposed) return;
 
-      const chart = createChart(chartRef.current, {
+      chart = createChart(mount, {
         layout: { background: { color: 'transparent' }, textColor: '#b8c7f0', attributionLogo: false },
-        width: chartRef.current.clientWidth,
-        height: 430,
+        width: mount.clientWidth,
+        height: mount.clientHeight || 430,
         crosshair: { mode: 1 },
         handleScroll: { mouseWheel: true, pressedMouseMove: true },
         handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
@@ -257,6 +263,17 @@ export default function DashboardPage() {
       ema50Series.current = chart.addSeries(LineSeries, { color: '#6ea8ff', lineWidth: 1 });
       upperBandSeries.current = chart.addSeries(LineSeries, { color: 'rgba(255,92,141,0.45)', lineWidth: 1 });
       lowerBandSeries.current = chart.addSeries(LineSeries, { color: 'rgba(92,255,173,0.45)', lineWidth: 1 });
+
+      onResize = () => {
+        if (!chart || !mount) return;
+        chart.applyOptions({ width: mount.clientWidth, height: mount.clientHeight || 430 });
+      };
+      onResize();
+      if (typeof ResizeObserver !== 'undefined') {
+        resizeObserver = new ResizeObserver(() => onResize?.());
+        resizeObserver.observe(mount);
+      }
+      window.addEventListener('resize', onResize);
 
       chart.subscribeCrosshairMove((param) => {
         const c = param.seriesData.get(candleSeries.current! as never) as unknown as CandlestickData | undefined;
@@ -277,11 +294,14 @@ export default function DashboardPage() {
       const bootstrap = await fetch('/api/chart', { cache: 'no-store' })
         .then(async (res) => (res.ok ? (res.json() as Promise<ChartBootstrapResponse>) : null))
         .catch(() => null);
+      if (isDisposed) return;
       applyBootstrapData(bootstrap, true);
       setChartReady(true);
 
       await fetch('/api/socket').catch(() => null);
-      const socket = io('', { path: '/api/socket' });
+      if (isDisposed) return;
+
+      socket = io('', { path: '/api/socket' });
       socket.on('market_selected', (payload: { symbol?: string; timeframe?: string }) => {
         if (payload.symbol) setSelectedSymbol(normalizeGraphMode(payload.symbol));
         if (payload.timeframe) setTimeframe(normalizeGraphTimeframe(payload.timeframe));
@@ -301,17 +321,25 @@ export default function DashboardPage() {
         setMeta(payload.meta);
         setHitRates(payload.hitRates);
       });
-
-      disconnect = () => {
-        socket.disconnect();
-        markersApi.current = null;
-        setChartReady(false);
-        chart.remove();
-      };
     };
     void setup();
 
-    return () => disconnect?.();
+    return () => {
+      isDisposed = true;
+      socket?.disconnect();
+      resizeObserver?.disconnect();
+      if (onResize) window.removeEventListener('resize', onResize);
+      markersApi.current = null;
+      candleSeries.current = null;
+      volumeSeries.current = null;
+      ema20Series.current = null;
+      ema50Series.current = null;
+      upperBandSeries.current = null;
+      lowerBandSeries.current = null;
+      chartApi.current = null;
+      chart?.remove();
+      setChartReady(false);
+    };
   }, [applyBootstrapData, applyDerivedIndicators]);
 
   useEffect(() => {
@@ -408,7 +436,9 @@ export default function DashboardPage() {
             ))}
           </select>
         </div>
-        <div ref={chartRef} style={{ width: '100%', height: 430 }} />
+        <div style={styles.chartViewport}>
+          <div ref={chartRef} style={styles.chartCanvas} />
+        </div>
         <div style={{ color: 'var(--muted)', marginTop: 6 }}>{tooltip || meta.reason}</div>
       </div>
 
@@ -461,6 +491,16 @@ const styles: Record<string, CSSProperties> = {
   page: { maxWidth: 1200, margin: '0 auto', padding: '1rem', display: 'flex', flexDirection: 'column', gap: 10 },
   row: { display: 'flex', gap: 16, padding: 12 },
   controls: { display: 'flex', gap: 10, marginBottom: 8 },
+  chartViewport: {
+    width: '100%',
+    height: 430,
+    border: '1px solid var(--border)',
+    borderRadius: 10,
+    overflow: 'hidden',
+    position: 'relative',
+    isolation: 'isolate',
+  },
+  chartCanvas: { width: '100%', height: '100%', position: 'relative' },
   tradeGrid: { display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))' },
   panels: { display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit,minmax(280px,1fr))' },
   card: { padding: 12 },

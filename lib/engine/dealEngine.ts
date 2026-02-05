@@ -48,6 +48,15 @@ type ModeRuntimeState = {
   shockTilt: number;
 };
 
+type SyntheticModeState = {
+  price: number;
+  startTime: number;
+  candles: Candle[];
+  regime: RegimeState | null;
+  nextRegimeSwitch: number;
+  lastTickAt: number;
+};
+
 const randomBetween = (min: number, max: number) => min + Math.random() * (max - min);
 
 const buildModeRuntime = (): Record<NonAutoGraphMode, ModeRuntimeState> => {
@@ -83,6 +92,8 @@ class DealEngine {
   private autoGraphMode: NonAutoGraphMode = NON_AUTO_GRAPH_MODES[0];
   private autoGraphModeUntil = 0;
   private modeRuntime: Record<NonAutoGraphMode, ModeRuntimeState> = buildModeRuntime();
+  private syntheticActiveMode: NonAutoGraphMode = NON_AUTO_GRAPH_MODES[0];
+  private syntheticModeStates: Partial<Record<NonAutoGraphMode, SyntheticModeState>> = {};
 
   constructor() {
     this.reseedSyntheticMarket(false);
@@ -151,6 +162,35 @@ class DealEngine {
       this.pickAutoMode(now);
     }
     return this.autoGraphMode;
+  }
+
+  private cloneRegime(regime: RegimeState | null) {
+    return regime ? { ...regime } : null;
+  }
+
+  private captureSyntheticState(mode: NonAutoGraphMode) {
+    if (this.currentDeal) return;
+    this.syntheticModeStates[mode] = {
+      price: this.price,
+      startTime: this.startTime,
+      candles: this.candles.map((candle) => ({ ...candle })),
+      regime: this.cloneRegime(this.regime),
+      nextRegimeSwitch: this.nextRegimeSwitch,
+      lastTickAt: this.lastTickAt,
+    };
+  }
+
+  private restoreSyntheticState(mode: NonAutoGraphMode) {
+    const state = this.syntheticModeStates[mode];
+    if (!state) return false;
+
+    this.price = state.price;
+    this.startTime = state.startTime;
+    this.candles = state.candles.map((candle) => ({ ...candle }));
+    this.regime = this.cloneRegime(state.regime);
+    this.nextRegimeSwitch = state.nextRegimeSwitch;
+    this.lastTickAt = state.lastTickAt;
+    return true;
   }
 
   private pickRegime(prev?: RegimeState | null): RegimeState {
@@ -296,16 +336,12 @@ class DealEngine {
     return this.candles[this.candles.length - 1];
   }
 
-  private reseedSyntheticMarket(emitSocketUpdate: boolean) {
-    if (this.currentDeal) return;
-
-    const now = Date.now();
-    this.maybeRotateRegime(now);
-
-    const mode = this.getResolvedGraphMode(now);
+  private createSyntheticState(mode: NonAutoGraphMode, now: number): SyntheticModeState {
     const profile = GRAPH_MODE_PROFILES[mode];
     const runtime = this.modeRuntime[mode];
     const bucketMs = timeframeToMs(this.selectedTimeframe);
+    const seedRegime = this.pickRegime(null);
+    const nextRegimeSwitch = now + randomBetween(12000, 24000);
 
     const seedCount = 250;
     const seeded: Candle[] = [];
@@ -323,14 +359,13 @@ class DealEngine {
       const noise = profile.basePrice * ((profile.noiseBps * runtime.noiseTilt) / 10000) * DealEngine.gaussianRandom() * 0.55;
       workingPrice = Math.max(profile.basePrice * 0.08, workingPrice + drift + pull + noise);
 
-      const wickRange =
-        workingPrice *
-        ((profile.wickBps * runtime.noiseTilt) / 10000) *
-        randomBetween(0.5, 1.8);
+      const wickRange = workingPrice * ((profile.wickBps * runtime.noiseTilt) / 10000) * randomBetween(0.5, 1.8);
       const high = Math.max(prevClose, workingPrice) + wickRange * randomBetween(0.12, 0.9);
       const low = Math.max(0.0000001, Math.min(prevClose, workingPrice) - wickRange * randomBetween(0.12, 0.9));
-      const volume =
-        Math.max(3, (profile.volumeBase * runtime.volumeTilt + Math.random() * profile.volumeJitter) * Math.max(1, Math.sqrt(bucketMs / 1000)));
+      const volume = Math.max(
+        3,
+        (profile.volumeBase * runtime.volumeTilt + Math.random() * profile.volumeJitter) * Math.max(1, Math.sqrt(bucketMs / 1000)),
+      );
 
       seeded.push({
         time: Math.floor(ts / bucketMs) * bucketMs,
@@ -344,10 +379,52 @@ class DealEngine {
       prevClose = workingPrice;
     }
 
-    this.candles = seeded;
-    this.price = seeded[seeded.length - 1]?.close ?? profile.basePrice;
-    this.lastTickAt = now;
-    this.startTime = now;
+    return {
+      price: seeded[seeded.length - 1]?.close ?? profile.basePrice,
+      startTime: now,
+      candles: seeded,
+      regime: seedRegime,
+      nextRegimeSwitch,
+      lastTickAt: now,
+    };
+  }
+
+  private applySyntheticState(state: SyntheticModeState) {
+    this.price = state.price;
+    this.startTime = state.startTime;
+    this.candles = state.candles.map((candle) => ({ ...candle }));
+    this.regime = this.cloneRegime(state.regime);
+    this.nextRegimeSwitch = state.nextRegimeSwitch;
+    this.lastTickAt = state.lastTickAt;
+  }
+
+  private activateSyntheticMode(mode: NonAutoGraphMode, now: number, forceReseed: boolean) {
+    if (!forceReseed && this.syntheticActiveMode !== mode && this.candles.length > 0) {
+      this.captureSyntheticState(this.syntheticActiveMode);
+    }
+
+    if (!forceReseed && this.restoreSyntheticState(mode)) {
+      this.syntheticActiveMode = mode;
+      return;
+    }
+
+    const fresh = this.createSyntheticState(mode, now);
+    this.syntheticModeStates[mode] = {
+      ...fresh,
+      candles: fresh.candles.map((candle) => ({ ...candle })),
+      regime: this.cloneRegime(fresh.regime),
+    };
+    this.applySyntheticState(fresh);
+    this.syntheticActiveMode = mode;
+  }
+
+  private reseedSyntheticMarket(emitSocketUpdate: boolean, forceReseed = false) {
+    if (this.currentDeal) return;
+
+    const now = Date.now();
+    const mode = this.getResolvedGraphMode(now);
+    this.activateSyntheticMode(mode, now, forceReseed);
+    this.maybeRotateRegime(now);
 
     if (emitSocketUpdate) {
       const io = getIO();
@@ -423,9 +500,14 @@ class DealEngine {
 
   private generateSyntheticTick() {
     const now = Date.now();
+    const mode = this.getResolvedGraphMode(now);
+    if (mode !== this.syntheticActiveMode) {
+      this.activateSyntheticMode(mode, now, false);
+      const io = getIO();
+      io?.emit('market_selected', { symbol: this.getSelectedSymbol(), timeframe: this.selectedTimeframe, source: 'synthetic' });
+    }
     this.maybeRotateRegime(now);
 
-    const mode = this.getResolvedGraphMode(now);
     const profile = GRAPH_MODE_PROFILES[mode];
     const runtime = this.modeRuntime[mode];
     const regime = this.regime ?? this.pickRegime();
@@ -491,6 +573,7 @@ class DealEngine {
   async runDeal(deal: DealWithJumps) {
     if (this.currentDeal) return;
 
+    this.captureSyntheticState(this.syntheticActiveMode);
     this.currentDeal = deal;
     this.price = deal.basePrice;
     this.startTime = Date.now();
@@ -665,7 +748,10 @@ class DealEngine {
     this.selectedTimeframe = nextTimeframe;
 
     if (!this.currentDeal) {
-      this.reseedSyntheticMarket(true);
+      if (timeframeChanged) {
+        this.syntheticModeStates = {};
+      }
+      this.reseedSyntheticMarket(true, timeframeChanged);
     } else if (timeframeChanged) {
       this.candles = this.candles.slice(-250);
       this.lastTickAt = Date.now();

@@ -39,6 +39,7 @@ type Trade = {
 type SignalState = 'BUY' | 'SELL' | 'NO_TRADE';
 type RawSignalState = SignalState | 'OFF';
 type ModelSignal = { model: string; signal: RawSignalState; confidence: number; reasons: string[] };
+type NormalizedModelSignal = Omit<ModelSignal, 'signal'> & { signal: SignalState };
 type Meta = { action: 'BUY' | 'SELL' | 'NO_TRADE'; confidence: number; reason: string };
 type ActivityEvent = { id: string; eventType: string; actorRole: string; createdAt: string; metadata: Record<string, unknown> };
 
@@ -158,6 +159,7 @@ export default function DashboardPage() {
   const [signals, setSignals] = useState<ModelSignal[]>([]);
   const [meta, setMeta] = useState<Meta>({ action: 'NO_TRADE', confidence: 0, reason: 'Waiting for data' });
   const [hitRates, setHitRates] = useState<{ meta: number; agents: Record<string, number> }>({ meta: 0, agents: {} });
+  const [lastAiUpdate, setLastAiUpdate] = useState('');
   const [buyAmount, setBuyAmount] = useState('');
   const [sellPercent, setSellPercent] = useState(100);
   const [warning, setWarning] = useState('');
@@ -437,6 +439,7 @@ export default function DashboardPage() {
         setSignals(payload.signals);
         setMeta(payload.meta);
         setHitRates(payload.hitRates);
+        setLastAiUpdate(new Date().toLocaleTimeString());
       });
     };
     void setup();
@@ -530,6 +533,35 @@ export default function DashboardPage() {
     fetchActivity();
   };
 
+  const normalizedSignals = useMemo<NormalizedModelSignal[]>(
+    () =>
+      signals.map((signal) => ({
+        ...signal,
+        signal: normalizeSignalState(signal.signal),
+      })),
+    [signals],
+  );
+
+  const committeeSummary = useMemo(() => {
+    const buy = normalizedSignals.filter((signal) => signal.signal === 'BUY').length;
+    const sell = normalizedSignals.filter((signal) => signal.signal === 'SELL').length;
+    const noTrade = normalizedSignals.filter((signal) => signal.signal === 'NO_TRADE').length;
+    const hasConflict = buy > 0 && sell > 0;
+    const hasStrongConsensus = buy >= 4 || sell >= 4;
+    const confidenceGatePass = meta.confidence > 70;
+    const decisionAligned = meta.action === 'BUY' ? buy >= 4 : meta.action === 'SELL' ? sell >= 4 : true;
+
+    return {
+      buy,
+      sell,
+      noTrade,
+      hasConflict,
+      hasStrongConsensus,
+      confidenceGatePass,
+      decisionAligned,
+    };
+  }, [normalizedSignals, meta.action, meta.confidence]);
+
   const tradeTape = useMemo(() => trades.slice(0, 20), [trades]);
 
   return (
@@ -593,13 +625,33 @@ export default function DashboardPage() {
               <span>{meta.action}</span>
               <span style={styles.signalStats}>({meta.confidence}% · hit {hitRates.meta}%)</span>
             </div>
+            <div style={styles.summaryRow}>
+              <span style={styles.voteChipBuy}>BUY {committeeSummary.buy}</span>
+              <span style={styles.voteChipSell}>SELL {committeeSummary.sell}</span>
+              <span style={styles.voteChipNeutral}>NO TRADE {committeeSummary.noTrade}</span>
+            </div>
+            <div style={styles.summaryRow}>
+              <span style={committeeSummary.hasStrongConsensus ? styles.statusChipPass : styles.statusChipWarn}>
+                Consensus {committeeSummary.hasStrongConsensus ? 'STRONG' : 'WEAK'}
+              </span>
+              <span style={committeeSummary.confidenceGatePass ? styles.statusChipPass : styles.statusChipWarn}>
+                Confidence Gate {committeeSummary.confidenceGatePass ? 'PASS' : 'FAIL'}
+              </span>
+              <span style={committeeSummary.hasConflict ? styles.statusChipWarn : styles.statusChipInfo}>
+                {committeeSummary.hasConflict ? 'Conflict Detected' : 'No Conflict'}
+              </span>
+              <span style={committeeSummary.decisionAligned ? styles.statusChipInfo : styles.statusChipWarn}>
+                {committeeSummary.decisionAligned ? 'Decision Aligned' : 'Decision Caution'}
+              </span>
+              <span style={styles.signalStats}>Updated {lastAiUpdate || '--'}</span>
+            </div>
             <div style={styles.signalReason}>{meta.reason}</div>
-            {signals.map((s) => (
+            {normalizedSignals.map((s) => (
               <div key={s.model} style={{ marginTop: 8 }}>
                 <div style={styles.signalRow}>
-                  <span className={signalLightClassName(normalizeSignalState(s.signal))} />
+                  <span className={signalLightClassName(s.signal)} />
                   <strong>{s.model}</strong>
-                  <span>{normalizeSignalState(s.signal)}</span>
+                  <span>{s.signal}</span>
                   <span style={styles.signalStats}>({s.confidence}% · hit {hitRates.agents[s.model] ?? 0}%)</span>
                 </div>
                 <div style={{ color: 'var(--muted)', fontSize: 12 }}>{s.reasons.join(' · ')}</div>
@@ -664,5 +716,54 @@ const styles: Record<string, CSSProperties> = {
   toggle: { width: '100%', textAlign: 'left', border: 'none', background: 'transparent', color: 'inherit', cursor: 'pointer' },
   signalRow: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 },
   signalStats: { color: 'var(--muted)', fontSize: 12 },
+  summaryRow: { display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginTop: 6 },
+  voteChipBuy: {
+    fontSize: 11,
+    padding: '3px 8px',
+    borderRadius: 999,
+    color: '#3cff8d',
+    border: '1px solid rgba(60,255,141,0.35)',
+    background: 'rgba(60,255,141,0.12)',
+  },
+  voteChipSell: {
+    fontSize: 11,
+    padding: '3px 8px',
+    borderRadius: 999,
+    color: '#ff5c8d',
+    border: '1px solid rgba(255,92,141,0.35)',
+    background: 'rgba(255,92,141,0.12)',
+  },
+  voteChipNeutral: {
+    fontSize: 11,
+    padding: '3px 8px',
+    borderRadius: 999,
+    color: '#ffd166',
+    border: '1px solid rgba(255,209,102,0.35)',
+    background: 'rgba(255,209,102,0.12)',
+  },
+  statusChipPass: {
+    fontSize: 11,
+    padding: '3px 8px',
+    borderRadius: 999,
+    color: '#3cff8d',
+    border: '1px solid rgba(60,255,141,0.3)',
+    background: 'rgba(60,255,141,0.08)',
+  },
+  statusChipWarn: {
+    fontSize: 11,
+    padding: '3px 8px',
+    borderRadius: 999,
+    color: '#ffb347',
+    border: '1px solid rgba(255,179,71,0.35)',
+    background: 'rgba(255,179,71,0.1)',
+  },
+  statusChipInfo: {
+    fontSize: 11,
+    padding: '3px 8px',
+    borderRadius: 999,
+    color: '#9cb7ff',
+    border: '1px solid rgba(156,183,255,0.3)',
+    background: 'rgba(156,183,255,0.1)',
+  },
   signalReason: { color: 'var(--muted)', fontSize: 12, marginTop: 4 },
 };

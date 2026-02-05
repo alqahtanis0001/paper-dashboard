@@ -677,8 +677,10 @@ class DealEngine {
     const prices = this.candles.map((candle) => candle.close);
     if (prices.length < 5) return;
 
+    const currentPrice = prices[prices.length - 1];
+    const hitRates = await this.settleSignalOutcomes(currentPrice);
     const signals = buildSignals(prices, this.candles.map((candle) => candle.volume));
-    const meta = aggregateSignals(signals);
+    const meta = aggregateSignals(signals, { agentHitRates: hitRates.agents });
 
     const created = await prisma.aiSignalLog
       .create({
@@ -695,13 +697,11 @@ class DealEngine {
       this.signalOutcomes.push({
         id: created.id,
         time: Date.now(),
-        price: prices[prices.length - 1],
+        price: currentPrice,
         action: meta.action,
         horizonSec: created.horizonSec,
       });
     }
-
-    const hitRates = await this.settleSignalOutcomes(prices[prices.length - 1]);
 
     const io = getIO();
     io?.emit('ai_signals', {

@@ -13,9 +13,14 @@ export type MetaDecision = {
   reason: string;
 };
 
+export type AggregateOptions = {
+  agentHitRates?: Record<string, number>;
+};
+
 const COMMITTEE_SIZE = 5;
 const MIN_CONSENSUS_VOTES = 4;
 const MIN_META_CONFIDENCE = 70;
+const MIN_EDGE_PCT = 50;
 
 function clampConfidence(value: number) {
   return Math.max(35, Math.min(95, Math.round(value)));
@@ -24,6 +29,10 @@ function clampConfidence(value: number) {
 function avg(values: number[]) {
   if (!values.length) return 0;
   return values.reduce((sum, item) => sum + item, 0) / values.length;
+}
+
+function sum(values: number[]) {
+  return values.reduce((total, item) => total + item, 0);
 }
 
 function ema(values: number[], period: number) {
@@ -52,11 +61,42 @@ function slope(values: number[]) {
   return values[values.length - 1] - values[values.length - 2];
 }
 
-function computeConsensusConfidence(voters: ModelSignal[], totalAgents: number, opposingVotes: number) {
-  const avgConfidence = avg(voters.map((voter) => voter.confidence));
+function getReliabilityMultiplier(model: string, agentHitRates?: Record<string, number>) {
+  const rawHitRate = agentHitRates?.[model];
+  if (typeof rawHitRate !== 'number' || !Number.isFinite(rawHitRate)) return 1;
+  const hitRate = Math.max(0, Math.min(100, rawHitRate));
+  const centered = (hitRate - 50) / 50; // [-1, 1]
+  return Math.max(0.8, Math.min(1.2, 1 + centered * 0.2));
+}
+
+function adjustedConfidence(signal: ModelSignal, agentHitRates?: Record<string, number>) {
+  const reliability = getReliabilityMultiplier(signal.model, agentHitRates);
+  return clampConfidence(signal.confidence * reliability);
+}
+
+function computeConsensusConfidence(
+  voters: ModelSignal[],
+  totalAgents: number,
+  opposingVotes: number,
+  neutralVotes: number,
+  agentHitRates?: Record<string, number>,
+) {
+  const avgConfidence = avg(voters.map((voter) => adjustedConfidence(voter, agentHitRates)));
   const agreementPct = (voters.length / totalAgents) * 100;
-  const conflictPenalty = opposingVotes * 3;
-  return Math.round(avgConfidence * 0.8 + agreementPct * 0.2 - conflictPenalty);
+  const conflictPenalty = opposingVotes * 6 + neutralVotes * 2;
+  return clampConfidence(avgConfidence * 0.78 + agreementPct * 0.22 - conflictPenalty);
+}
+
+function computeEdgePct(voters: ModelSignal[], opposing: ModelSignal[], agentHitRates?: Record<string, number>) {
+  const voteWeight = sum(voters.map((voter) => adjustedConfidence(voter, agentHitRates)));
+  const opposingWeight = sum(opposing.map((voter) => adjustedConfidence(voter, agentHitRates)));
+  const denominator = voteWeight + opposingWeight;
+  if (denominator <= 0) return 0;
+  return Math.round(((voteWeight - opposingWeight) / denominator) * 100);
+}
+
+function voteSummary(buyVotes: ModelSignal[], sellVotes: ModelSignal[], noTradeVotes: ModelSignal[]) {
+  return `${buyVotes.length} BUY / ${sellVotes.length} SELL / ${noTradeVotes.length} NO_TRADE`;
 }
 
 export function buildSignals(prices: number[], volumes: number[] = []): ModelSignal[] {
@@ -197,7 +237,8 @@ export function buildSignals(prices: number[], volumes: number[] = []): ModelSig
   return committee.slice(0, COMMITTEE_SIZE);
 }
 
-export function aggregateSignals(signals: ModelSignal[]): MetaDecision {
+export function aggregateSignals(signals: ModelSignal[], options: AggregateOptions = {}): MetaDecision {
+  const { agentHitRates } = options;
   const committee = signals.slice(0, COMMITTEE_SIZE);
   if (committee.length < COMMITTEE_SIZE) {
     return {
@@ -212,42 +253,66 @@ export function aggregateSignals(signals: ModelSignal[]): MetaDecision {
   const noTradeVotes = committee.filter((signal) => signal.signal === 'NO_TRADE');
 
   if (buyVotes.length >= MIN_CONSENSUS_VOTES) {
-    const overallConfidence = computeConsensusConfidence(buyVotes, committee.length, sellVotes.length);
-    if (overallConfidence > MIN_META_CONFIDENCE) {
+    const overallConfidence = computeConsensusConfidence(
+      buyVotes,
+      committee.length,
+      sellVotes.length,
+      noTradeVotes.length,
+      agentHitRates,
+    );
+    const edgePct = computeEdgePct(buyVotes, sellVotes, agentHitRates);
+    if (overallConfidence > MIN_META_CONFIDENCE && edgePct >= MIN_EDGE_PCT) {
       return {
         action: 'BUY',
         confidence: overallConfidence,
-        reason: `BUY consensus ${buyVotes.length}/5, overall confidence ${overallConfidence}%`,
+        reason: `BUY consensus ${buyVotes.length}/5 | confidence ${overallConfidence}% | edge +${edgePct}`,
       };
     }
+    const failures = [
+      overallConfidence <= MIN_META_CONFIDENCE ? `confidence ${overallConfidence}% <= ${MIN_META_CONFIDENCE}%` : null,
+      edgePct < MIN_EDGE_PCT ? `edge ${edgePct} < ${MIN_EDGE_PCT}` : null,
+    ].filter(Boolean);
     return {
       action: 'NO_TRADE',
       confidence: overallConfidence,
-      reason: `BUY votes ${buyVotes.length}/5 but confidence ${overallConfidence}% is not above ${MIN_META_CONFIDENCE}%`,
+      reason: `BUY votes ${buyVotes.length}/5 but ${failures.join(', ')} (${voteSummary(buyVotes, sellVotes, noTradeVotes)})`,
     };
   }
 
   if (sellVotes.length >= MIN_CONSENSUS_VOTES) {
-    const overallConfidence = computeConsensusConfidence(sellVotes, committee.length, buyVotes.length);
-    if (overallConfidence > MIN_META_CONFIDENCE) {
+    const overallConfidence = computeConsensusConfidence(
+      sellVotes,
+      committee.length,
+      buyVotes.length,
+      noTradeVotes.length,
+      agentHitRates,
+    );
+    const edgePct = computeEdgePct(sellVotes, buyVotes, agentHitRates);
+    if (overallConfidence > MIN_META_CONFIDENCE && edgePct >= MIN_EDGE_PCT) {
       return {
         action: 'SELL',
         confidence: overallConfidence,
-        reason: `SELL consensus ${sellVotes.length}/5, overall confidence ${overallConfidence}%`,
+        reason: `SELL consensus ${sellVotes.length}/5 | confidence ${overallConfidence}% | edge +${edgePct}`,
       };
     }
+    const failures = [
+      overallConfidence <= MIN_META_CONFIDENCE ? `confidence ${overallConfidence}% <= ${MIN_META_CONFIDENCE}%` : null,
+      edgePct < MIN_EDGE_PCT ? `edge ${edgePct} < ${MIN_EDGE_PCT}` : null,
+    ].filter(Boolean);
     return {
       action: 'NO_TRADE',
       confidence: overallConfidence,
-      reason: `SELL votes ${sellVotes.length}/5 but confidence ${overallConfidence}% is not above ${MIN_META_CONFIDENCE}%`,
+      reason: `SELL votes ${sellVotes.length}/5 but ${failures.join(', ')} (${voteSummary(buyVotes, sellVotes, noTradeVotes)})`,
     };
   }
 
   if (buyVotes.length > 0 && sellVotes.length > 0) {
+    const buyAvg = Math.round(avg(buyVotes.map((signal) => adjustedConfidence(signal, agentHitRates))));
+    const sellAvg = Math.round(avg(sellVotes.map((signal) => adjustedConfidence(signal, agentHitRates))));
     return {
       action: 'NO_TRADE',
       confidence: 52,
-      reason: `Conflict in committee (${buyVotes.length} BUY vs ${sellVotes.length} SELL); stay conservative`,
+      reason: `Conflict (${voteSummary(buyVotes, sellVotes, noTradeVotes)}; BUY avg ${buyAvg}% vs SELL avg ${sellAvg}%)`,
     };
   }
 

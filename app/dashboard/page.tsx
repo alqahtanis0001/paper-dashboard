@@ -39,6 +39,26 @@ type ChartPreference = {
   collapsedJson?: Record<string, boolean> | null;
 };
 
+const SYMBOL_OPTIONS = [
+  'AUTO',
+  'BTC/USDT',
+  'ETH/USDT',
+  'SOL/USDT',
+  'BNB/USDT',
+  'XRP/USDT',
+  'ADA/USDT',
+  'DOGE/USDT',
+  'AVAX/USDT',
+  'LINK/USDT',
+  'DOT/USDT',
+  'MATIC/USDT',
+  'LTC/USDT',
+  'BCH/USDT',
+  'ATOM/USDT',
+  'UNI/USDT',
+  'TRX/USDT',
+] as const;
+
 const nearestCandleTime = (candles: CandlestickData<Time>[], tsSec: number) => {
   if (!candles.length) return tsSec as UTCTimestamp;
   let nearest = candles[0].time as number;
@@ -192,6 +212,7 @@ export default function DashboardPage() {
         chart.timeScale().setVisibleLogicalRange({ from: zoomLogical - 120, to: zoomLogical });
       }
 
+      await fetch('/api/socket').catch(() => null);
       const socket = io('', { path: '/api/socket' });
       socket.on('market_selected', (payload: { symbol: string }) => setSelectedSymbol(payload.symbol ?? 'AUTO'));
       socket.on('price_tick', (payload: { candle: { time: number; open: number; high: number; low: number; close: number; volume: number } }) => {
@@ -295,7 +316,11 @@ export default function DashboardPage() {
 
       <div className="glass" style={{ padding: 12 }}>
         <div style={styles.controls}>
-          <select value={selectedSymbol} onChange={(e) => setSelectedSymbol(e.target.value)} style={styles.input}><option value="AUTO">AUTO</option><option value="BTC/USDT">BTC/USDT</option><option value="ETH/USDT">ETH/USDT</option></select>
+          <select value={selectedSymbol} onChange={(e) => setSelectedSymbol(e.target.value)} style={styles.input}>
+            {SYMBOL_OPTIONS.map((symbol) => (
+              <option key={symbol} value={symbol}>{symbol}</option>
+            ))}
+          </select>
           <select value={timeframe} onChange={(e) => setTimeframe(e.target.value)} style={styles.input}><option value="1s">1s</option><option value="5s">5s</option><option value="15s">15s</option></select>
         </div>
         <div ref={chartRef} style={{ width: '100%', height: 430 }} />

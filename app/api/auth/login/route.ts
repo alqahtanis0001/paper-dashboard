@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { assertLoginAllowed, getClientIp, hashIp, recordLoginAttempt } from '@/lib/security';
 import { logAuditEvent } from '@/lib/audit';
 import { logServerAction } from '@/lib/serverLogger';
-import { getConfiguredPasskey, normalizePasskey } from '@/lib/passkeys';
+import { verifyRolePasskey } from '@/lib/passkeys';
 import { collectClientContext } from '@/lib/clientContext';
 
 const campaignSchema = z.object({
@@ -57,8 +57,6 @@ const bodySchema = z.object({
   passkey: z.string().min(1),
   client: clientPayloadSchema.optional(),
 });
-
-const DEFAULT_USER_PASSKEY = 'user-pass-123';
 
 function cleanText(value: string | null | undefined) {
   if (typeof value !== 'string') return null;
@@ -192,8 +190,14 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Invalid payload' }, { status: 400 });
   }
 
-  const configuredPasskey = getConfiguredPasskey(process.env.USER_PASSKEY, DEFAULT_USER_PASSKEY);
-  const success = normalizePasskey(parsed.data.passkey) === configuredPasskey;
+  const passkeyCheck = verifyRolePasskey('USER', parsed.data.passkey);
+  if (passkeyCheck.reason === 'not_configured') {
+    await logAuditEvent('login_failed', 'USER', { ipHash, roleAttempted: 'USER', reason: 'passkey_not_configured' });
+    logServerAction('auth.user.login', 'error', { reason: 'passkey_not_configured' });
+    return NextResponse.json({ error: 'Authentication unavailable' }, { status: 503 });
+  }
+
+  const success = passkeyCheck.ok;
   await recordLoginAttempt(ipHash, 'USER', success);
 
   if (!success) {
@@ -312,6 +316,10 @@ export async function POST(req: Request) {
       partOfDay,
     },
   });
-  logServerAction('auth.user.login', 'success', { sessionId });
+  logServerAction('auth.user.login', 'success', {
+    sessionId,
+    passkeySource: passkeyCheck.source ?? 'unknown',
+    usedFallbackPasskey: passkeyCheck.usedFallback,
+  });
   return res;
 }

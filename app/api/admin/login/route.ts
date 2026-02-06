@@ -4,11 +4,9 @@ import { z } from 'zod';
 import { assertLoginAllowed, getClientIp, hashIp, recordLoginAttempt } from '@/lib/security';
 import { logAuditEvent } from '@/lib/audit';
 import { logServerAction } from '@/lib/serverLogger';
-import { getConfiguredPasskey, normalizePasskey } from '@/lib/passkeys';
+import { verifyRolePasskey } from '@/lib/passkeys';
 
 const bodySchema = z.object({ passkey: z.string().min(1) });
-
-const DEFAULT_ADMIN_PASSKEY = 'admin-pass-456';
 
 export async function POST(req: Request) {
   logServerAction('auth.admin.login', 'start');
@@ -26,8 +24,14 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Invalid payload' }, { status: 400 });
   }
 
-  const configuredPasskey = getConfiguredPasskey(process.env.ADMIN_PASSKEY, DEFAULT_ADMIN_PASSKEY);
-  const success = normalizePasskey(parsed.data.passkey) === configuredPasskey;
+  const passkeyCheck = verifyRolePasskey('ADMIN', parsed.data.passkey);
+  if (passkeyCheck.reason === 'not_configured') {
+    await logAuditEvent('login_failed', 'ADMIN', { ipHash, roleAttempted: 'ADMIN', reason: 'passkey_not_configured' });
+    logServerAction('auth.admin.login', 'error', { reason: 'passkey_not_configured' });
+    return NextResponse.json({ error: 'Authentication unavailable' }, { status: 503 });
+  }
+
+  const success = passkeyCheck.ok;
   await recordLoginAttempt(ipHash, 'ADMIN', success);
 
   if (!success) {
@@ -40,6 +44,10 @@ export async function POST(req: Request) {
   const res = NextResponse.json({ ok: true });
   attachSessionCookie(res, sessionId, expiresAt);
   await logAuditEvent('login_success', 'ADMIN', { sessionId });
-  logServerAction('auth.admin.login', 'success', { sessionId });
+  logServerAction('auth.admin.login', 'success', {
+    sessionId,
+    passkeySource: passkeyCheck.source ?? 'unknown',
+    usedFallbackPasskey: passkeyCheck.usedFallback,
+  });
   return res;
 }

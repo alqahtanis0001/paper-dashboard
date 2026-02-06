@@ -1,7 +1,7 @@
 import { Prisma, PrismaClient } from '@prisma/client';
-import { runtimeEnv } from './runtimeEnv';
+import { printRuntimeModeOnce, runtimeEnv } from './runtimeEnv';
 
-const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient; prismaBootLogged?: boolean };
+const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
 const prismaDatasourceUrl = runtimeEnv.databaseUrl ?? 'postgresql://invalid:invalid@localhost:5432/unconfigured';
 const prismaLogLevel: Prisma.LogLevel[] =
@@ -21,19 +21,4 @@ export const prisma =
 if (runtimeEnv.runtimeTarget !== 'render') {
   globalForPrisma.prisma = prisma;
 }
-
-if (!globalForPrisma.prismaBootLogged) {
-  console.info('[server][runtime.storage] INFO', {
-    runtimeTarget: runtimeEnv.runtimeTarget,
-    storageMode: runtimeEnv.storageMode,
-    hasDatabase: runtimeEnv.hasDatabase,
-    databaseHost: runtimeEnv.databaseHost,
-    databaseSource: runtimeEnv.databaseSource,
-    databaseUrlAdapted: runtimeEnv.databaseUrlAdapted,
-    secureCookies: runtimeEnv.secureCookies,
-  });
-  if (runtimeEnv.notes.length > 0) {
-    console.info('[server][runtime.storage] NOTES', runtimeEnv.notes);
-  }
-  globalForPrisma.prismaBootLogged = true;
-}
+printRuntimeModeOnce();

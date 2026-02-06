@@ -227,6 +227,15 @@ export const runtimeEnv = buildRuntimeEnv(process.env);
 
 export type RuntimeEnv = typeof runtimeEnv;
 
+const globalRuntimeBanner = globalThis as unknown as { runtimeBannerPrinted?: boolean };
+
+export function printRuntimeModeOnce() {
+  if (globalRuntimeBanner.runtimeBannerPrinted) return;
+  const runtimeLabel = runtimeEnv.isLocal ? 'Running in Locally' : 'Running in Server';
+  console.info(runtimeLabel);
+  globalRuntimeBanner.runtimeBannerPrinted = true;
+}
+
 export function getRuntimeSummary() {
   return {
     runtimeTarget: runtimeEnv.runtimeTarget,

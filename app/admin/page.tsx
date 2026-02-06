@@ -110,6 +110,7 @@ const formatMoney = (amount: number) =>
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
+const KEEP_ALIVE_PING_INTERVAL_MS = 6 * 60 * 1000;
 const formatClock = (value: number | null | undefined) => (typeof value === 'number' ? dayjs(value).format('HH:mm:ss') : '--');
 const metaActionColor = (action: 'BUY' | 'SELL' | 'NO_TRADE' | undefined) =>
   action === 'BUY' ? '#5df3a6' : action === 'SELL' ? '#ff5c8d' : '#ffd166';
@@ -217,6 +218,20 @@ export default function AdminPage() {
     }, 10000);
     return () => clearInterval(timer);
   }, [authed, autoRefresh, refreshAll]);
+
+  useEffect(() => {
+    const pingWebsite = () => {
+      void fetch('/api/ping', {
+        method: 'GET',
+        cache: 'no-store',
+        keepalive: true,
+      }).catch(() => null);
+    };
+
+    pingWebsite();
+    const pingInterval = setInterval(pingWebsite, KEEP_ALIVE_PING_INTERVAL_MS);
+    return () => clearInterval(pingInterval);
+  }, []);
 
   useEffect(() => {
     if (!authed) return;

@@ -5,6 +5,7 @@ import { assertLoginAllowed, getClientIp, hashIp, recordLoginAttempt } from '@/l
 import { logAuditEvent } from '@/lib/audit';
 import { logServerAction } from '@/lib/serverLogger';
 import { getConfiguredPasskey, normalizePasskey } from '@/lib/passkeys';
+import { collectClientContext } from '@/lib/clientContext';
 
 const bodySchema = z.object({ passkey: z.string().min(1) });
 
@@ -36,10 +37,32 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
+  const clientContext = await collectClientContext(req.headers);
   const { sessionId, expiresAt } = await createSession('USER');
   const res = NextResponse.json({ ok: true });
   attachSessionCookie(res, sessionId, expiresAt);
-  await logAuditEvent('login_success', 'USER', { sessionId });
+  await logAuditEvent('login_success', 'USER', {
+    sessionId,
+    ipHash: clientContext.ipHash,
+    ip: clientContext.ip,
+    client: {
+      userAgent: clientContext.userAgent,
+      browser: clientContext.browser,
+      os: clientContext.os,
+      device: clientContext.device,
+      city: clientContext.city,
+      region: clientContext.region,
+      country: clientContext.country,
+      countryCode: clientContext.countryCode,
+      timezone: clientContext.timezone,
+      org: clientContext.org,
+      postal: clientContext.postal,
+      latitude: clientContext.latitude,
+      longitude: clientContext.longitude,
+      locationSource: clientContext.locationSource,
+      privateIp: clientContext.privateIp,
+    },
+  });
   logServerAction('auth.user.login', 'success', { sessionId });
   return res;
 }

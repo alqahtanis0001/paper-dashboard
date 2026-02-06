@@ -189,26 +189,27 @@ export default function LoginPage() {
   };
 
   return (
-    <div style={styles.page}>
-      <div style={styles.card} className="glass">
-        <h1 style={styles.title}>AI Meta Desk</h1>
-        <p style={styles.subtitle}>Passkey-only access. The AIs take it from here.</p>
+    <div style={styles.page} suppressHydrationWarning>
+      <div style={styles.card} className="glass" suppressHydrationWarning>
+        <h1 style={styles.title} suppressHydrationWarning>AI Meta Desk</h1>
+        <p style={styles.subtitle} suppressHydrationWarning>Passkey-only access. The AIs take it from here.</p>
         <form onSubmit={submit} style={{ width: '100%' }}>
-          <label style={styles.label}>Passkey</label>
+          <label style={styles.label} suppressHydrationWarning>Passkey</label>
           <input
             type="password"
             value={passkey}
             onChange={(e) => setPasskey(e.target.value)}
             style={styles.input}
             placeholder="Enter passkey"
+            suppressHydrationWarning
           />
-          {error && <p style={styles.error}>{error}</p>}
-          <button type="submit" disabled={loading} style={styles.button}>
+          {error && <p style={styles.error} suppressHydrationWarning>{error}</p>}
+          <button type="submit" disabled={loading} style={styles.button} suppressHydrationWarning>
             {loading ? 'Verifying…' : 'Enter Dashboard'}
           </button>
         </form>
-        <div style={styles.footer}>
-          <span style={{ color: 'var(--muted)', fontSize: 13 }}>Admin? Use /admin</span>
+        <div style={styles.footer} suppressHydrationWarning>
+          <span style={{ color: 'var(--muted)', fontSize: 13 }} suppressHydrationWarning>Admin? Use /admin</span>
         </div>
       </div>
     </div>

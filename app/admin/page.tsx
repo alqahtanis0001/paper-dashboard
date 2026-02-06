@@ -97,6 +97,41 @@ type UserAccessContext = {
   os: string | null;
   device: string | null;
   userAgent: string | null;
+  marketing: {
+    landingPath: string | null;
+    referrer: string | null;
+    referrerHost: string | null;
+    language: string | null;
+    languages: string[];
+    locale: string | null;
+    clientTimezone: string | null;
+    platform: string | null;
+    trafficChannel: string | null;
+    campaignLabel: string | null;
+    audienceSegment: string | null;
+    partOfDay: string | null;
+    localHour: number | null;
+    utmSource: string | null;
+    utmMedium: string | null;
+    utmCampaign: string | null;
+    utmTerm: string | null;
+    utmContent: string | null;
+    clickIds: {
+      gclid: string | null;
+      fbclid: string | null;
+      ttclid: string | null;
+      msclkid: string | null;
+    };
+    connectionType: string | null;
+    downlinkMbps: number | null;
+    rttMs: number | null;
+    saveData: boolean | null;
+    viewportWidth: number | null;
+    viewportHeight: number | null;
+    screenWidth: number | null;
+    screenHeight: number | null;
+    colorDepth: number | null;
+  };
   session: {
     id: string;
     createdAt: string;
@@ -105,6 +140,21 @@ type UserAccessContext = {
     revokedAt: string | null;
     isActive: boolean;
   } | null;
+  sessionInsights: {
+    freshnessLabel: string;
+    lastSeenLabel: string;
+    expiresInLabel: string;
+  };
+  aggregates: {
+    loginsLast24h: number;
+    loginsLast7d: number;
+    trafficVolumeLabel: string;
+    topChannels: { label: string; count: number; sharePct: number }[];
+    topCountries: { label: string; count: number; sharePct: number }[];
+    topDevices: { label: string; count: number; sharePct: number }[];
+    topCampaigns: { label: string; count: number; sharePct: number }[];
+    plainSummary: string;
+  };
 };
 
 const CHAIN_PRESETS: Record<string, { chainName: string; basePrice: number }> = {
@@ -142,6 +192,8 @@ const formatMoney = (amount: number) =>
 const KEEP_ALIVE_PING_INTERVAL_MS = 6 * 60 * 1000;
 const formatClock = (value: number | null | undefined) => (typeof value === 'number' ? dayjs(value).format('HH:mm:ss') : '--');
 const formatDateTime = (value: string | null | undefined) => (value ? dayjs(value).format('MMM D, YYYY HH:mm:ss') : '--');
+const formatDistribution = (rows: { label: string; count: number; sharePct: number }[]) =>
+  rows.map((row) => `${row.label} (${row.sharePct}% • ${row.count})`);
 const metaActionColor = (action: 'BUY' | 'SELL' | 'NO_TRADE' | undefined) =>
   action === 'BUY' ? '#5df3a6' : action === 'SELL' ? '#ff5c8d' : '#ffd166';
 
@@ -543,6 +595,18 @@ export default function AdminPage() {
 
   const userLocationLabel = [userAccess?.city, userAccess?.region, userAccess?.country].filter(Boolean).join(', ') || 'Unknown';
   const userSessionState = userAccess?.session?.isActive ? 'Active session' : 'No active session';
+  const topChannelList = userAccess ? formatDistribution(userAccess.aggregates.topChannels) : [];
+  const topCountryList = userAccess ? formatDistribution(userAccess.aggregates.topCountries) : [];
+  const topDeviceList = userAccess ? formatDistribution(userAccess.aggregates.topDevices) : [];
+  const topCampaignList = userAccess ? formatDistribution(userAccess.aggregates.topCampaigns) : [];
+  const clickIdSummary = userAccess
+    ? [
+        userAccess.marketing.clickIds.gclid ? 'Google Ads ID' : null,
+        userAccess.marketing.clickIds.fbclid ? 'Meta Ads ID' : null,
+        userAccess.marketing.clickIds.ttclid ? 'TikTok Ads ID' : null,
+        userAccess.marketing.clickIds.msclkid ? 'Microsoft Ads ID' : null,
+      ].filter(Boolean).join(' • ')
+    : '';
 
   if (!authed) {
     return (
@@ -616,7 +680,7 @@ export default function AdminPage() {
               <div style={styles.syncStatCard}>
                 <div style={styles.label}>Last User Login</div>
                 <strong>{formatDateTime(userAccess.lastLoginAt)}</strong>
-                <span style={styles.mutedText}>{userSessionState}</span>
+                <span style={styles.mutedText}>{userAccess.sessionInsights.freshnessLabel}</span>
               </div>
 
               <div style={styles.syncStatCard}>
@@ -638,23 +702,128 @@ export default function AdminPage() {
               </div>
 
               <div style={styles.syncStatCard}>
-                <div style={styles.label}>Timezone / Network</div>
-                <strong>{userAccess.timezone ?? '--'}</strong>
-                <span style={styles.mutedText}>{userAccess.org ?? '--'}</span>
+                <div style={styles.label}>Acquisition Channel</div>
+                <strong>{userAccess.marketing.trafficChannel ?? '--'}</strong>
+                <span style={styles.mutedText}>{userAccess.marketing.audienceSegment ?? 'General audience profile'}</span>
               </div>
 
               <div style={styles.syncStatCard}>
-                <div style={styles.label}>Geo Source</div>
-                <strong>{userAccess.locationSource ?? 'none'}</strong>
+                <div style={styles.label}>Campaign / Source</div>
+                <strong>{userAccess.marketing.campaignLabel ?? 'No tagged campaign'}</strong>
                 <span style={styles.mutedText}>
-                  Private IP: {userAccess.privateIp === null ? '--' : userAccess.privateIp ? 'yes' : 'no'}
+                  {[
+                    userAccess.marketing.utmSource ? `utm_source=${userAccess.marketing.utmSource}` : null,
+                    userAccess.marketing.utmMedium ? `utm_medium=${userAccess.marketing.utmMedium}` : null,
+                    userAccess.marketing.utmCampaign ? `utm_campaign=${userAccess.marketing.utmCampaign}` : null,
+                  ].filter(Boolean).join(' • ') || 'No UTM tags detected'}
                 </span>
               </div>
             </div>
 
             <div style={styles.userInfoFooter}>
-              <div style={{ ...styles.mutedText, marginBottom: 4 }}>User Agent</div>
-              <div style={styles.monoText}>{userAccess.userAgent ?? '--'}</div>
+              <div style={{ ...styles.mutedText, marginBottom: 4 }}>Marketing Summary</div>
+              <div style={styles.mutedText}>{userAccess.aggregates.plainSummary}</div>
+            </div>
+
+            <div style={styles.userInfoGrid}>
+              <div style={styles.syncStatCard}>
+                <div style={styles.label}>Traffic Snapshot</div>
+                <strong>{userAccess.aggregates.trafficVolumeLabel}</strong>
+                <span style={styles.mutedText}>
+                  24h logins: {userAccess.aggregates.loginsLast24h} • 7d logins: {userAccess.aggregates.loginsLast7d}
+                </span>
+              </div>
+              <div style={styles.syncStatCard}>
+                <div style={styles.label}>Top Channels (7d)</div>
+                {topChannelList.length ? (
+                  topChannelList.map((item) => (
+                    <span key={item} style={styles.mutedText}>{item}</span>
+                  ))
+                ) : (
+                  <span style={styles.mutedText}>No data yet</span>
+                )}
+              </div>
+              <div style={styles.syncStatCard}>
+                <div style={styles.label}>Top Devices (7d)</div>
+                {topDeviceList.length ? (
+                  topDeviceList.map((item) => (
+                    <span key={item} style={styles.mutedText}>{item}</span>
+                  ))
+                ) : (
+                  <span style={styles.mutedText}>No data yet</span>
+                )}
+              </div>
+              <div style={styles.syncStatCard}>
+                <div style={styles.label}>Top Countries (7d)</div>
+                {topCountryList.length ? (
+                  topCountryList.map((item) => (
+                    <span key={item} style={styles.mutedText}>{item}</span>
+                  ))
+                ) : (
+                  <span style={styles.mutedText}>No data yet</span>
+                )}
+              </div>
+              <div style={styles.syncStatCard}>
+                <div style={styles.label}>Top Campaigns (7d)</div>
+                {topCampaignList.length ? (
+                  topCampaignList.map((item) => (
+                    <span key={item} style={styles.mutedText}>{item}</span>
+                  ))
+                ) : (
+                  <span style={styles.mutedText}>No campaign data yet</span>
+                )}
+              </div>
+              <div style={styles.syncStatCard}>
+                <div style={styles.label}>Connection / Delivery Hint</div>
+                <strong>{userAccess.marketing.connectionType ?? 'Unknown network type'}</strong>
+                <span style={styles.mutedText}>
+                  {[
+                    typeof userAccess.marketing.downlinkMbps === 'number' ? `${userAccess.marketing.downlinkMbps.toFixed(1)} Mbps` : null,
+                    typeof userAccess.marketing.rttMs === 'number' ? `${Math.round(userAccess.marketing.rttMs)} ms RTT` : null,
+                    userAccess.marketing.saveData === true ? 'User enabled data saver' : null,
+                  ].filter(Boolean).join(' • ') || 'No network telemetry'}
+                </span>
+              </div>
+            </div>
+
+            <div style={styles.userInfoGrid}>
+              <div style={styles.syncStatCard}>
+                <div style={styles.label}>Timezone / Local Window</div>
+                <strong>{userAccess.marketing.clientTimezone ?? userAccess.timezone ?? '--'}</strong>
+                <span style={styles.mutedText}>
+                  {userAccess.marketing.partOfDay ?? '--'}
+                  {typeof userAccess.marketing.localHour === 'number' ? ` • local hour ${userAccess.marketing.localHour}:00` : ''}
+                </span>
+              </div>
+              <div style={styles.syncStatCard}>
+                <div style={styles.label}>Language / Locale</div>
+                <strong>{[userAccess.marketing.language, userAccess.marketing.locale].filter(Boolean).join(' • ') || '--'}</strong>
+                <span style={styles.mutedText}>
+                  {userAccess.marketing.languages.length ? userAccess.marketing.languages.join(' • ') : 'No language list'}
+                </span>
+              </div>
+              <div style={styles.syncStatCard}>
+                <div style={styles.label}>Referrer + Landing</div>
+                <strong>{userAccess.marketing.referrerHost ?? 'Direct / no referrer'}</strong>
+                <span style={styles.mutedText}>{userAccess.marketing.landingPath ?? '--'}</span>
+              </div>
+              <div style={styles.syncStatCard}>
+                <div style={styles.label}>Ad Platform IDs</div>
+                <strong>{clickIdSummary || 'No ad click IDs captured'}</strong>
+                <span style={styles.mutedText}>
+                  Geo source: {userAccess.locationSource ?? 'none'} • Private IP: {userAccess.privateIp === null ? '--' : userAccess.privateIp ? 'yes' : 'no'}
+                </span>
+              </div>
+              <div style={styles.syncStatCard}>
+                <div style={styles.label}>Session Health</div>
+                <strong>{userSessionState}</strong>
+                <span style={styles.mutedText}>{userAccess.sessionInsights.lastSeenLabel}</span>
+              </div>
+              <div style={styles.syncStatCard}>
+                <div style={styles.label}>Session Expiry</div>
+                <strong>{userAccess.sessionInsights.expiresInLabel}</strong>
+                <span style={styles.mutedText}>Expires at {formatDateTime(userAccess.session?.expiresAt)}</span>
+              </div>
             </div>
 
             <div style={styles.userInfoGrid}>
@@ -668,6 +837,21 @@ export default function AdminPage() {
                 <strong>{formatDateTime(userAccess.session?.lastSeenAt)}</strong>
                 <span style={styles.mutedText}>Expires {formatDateTime(userAccess.session?.expiresAt)}</span>
               </div>
+            </div>
+
+            <div style={styles.userInfoFooter}>
+              <div style={{ ...styles.mutedText, marginBottom: 4 }}>Technical Details (support/debug)</div>
+              <div style={styles.mutedText}>
+                {[
+                  userAccess.marketing.platform,
+                  typeof userAccess.marketing.viewportWidth === 'number' && typeof userAccess.marketing.viewportHeight === 'number'
+                    ? `viewport ${userAccess.marketing.viewportWidth}x${userAccess.marketing.viewportHeight}`
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(' • ') || 'No extra device dimensions'}
+              </div>
+              <div style={styles.monoText}>{userAccess.userAgent ?? '--'}</div>
             </div>
           </>
         )}

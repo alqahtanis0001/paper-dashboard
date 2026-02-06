@@ -3,6 +3,92 @@
 import { CSSProperties, FormEvent, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
+type LoginClientContext = {
+  landingPath: string;
+  referrer: string | null;
+  language: string | null;
+  languages: string[];
+  locale: string | null;
+  timezone: string | null;
+  platform: string | null;
+  userAgentClient: string | null;
+  viewportWidth: number | null;
+  viewportHeight: number | null;
+  screenWidth: number | null;
+  screenHeight: number | null;
+  colorDepth: number | null;
+  campaign: {
+    utmSource: string | null;
+    utmMedium: string | null;
+    utmCampaign: string | null;
+    utmTerm: string | null;
+    utmContent: string | null;
+    gclid: string | null;
+    fbclid: string | null;
+    ttclid: string | null;
+    msclkid: string | null;
+  };
+  connection: {
+    effectiveType: string | null;
+    downlinkMbps: number | null;
+    rttMs: number | null;
+    saveData: boolean | null;
+  };
+};
+
+const getQueryParam = (params: URLSearchParams, key: string) => {
+  const value = params.get(key);
+  return value && value.trim().length > 0 ? value.trim() : null;
+};
+
+const buildClientContext = (): LoginClientContext => {
+  const params = new URLSearchParams(window.location.search);
+  const nav = navigator as Navigator & {
+    language?: string;
+    languages?: readonly string[];
+    platform?: string;
+    connection?: {
+      effectiveType?: string;
+      downlink?: number;
+      rtt?: number;
+      saveData?: boolean;
+    };
+  };
+
+  return {
+    landingPath: `${window.location.pathname}${window.location.search}`,
+    referrer: document.referrer || null,
+    language: nav.language ?? null,
+    languages: Array.isArray(nav.languages) ? [...nav.languages].slice(0, 8) : [],
+    locale: Intl.DateTimeFormat().resolvedOptions().locale ?? null,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone ?? null,
+    platform: nav.platform ?? null,
+    userAgentClient: navigator.userAgent ?? null,
+    viewportWidth: Number.isFinite(window.innerWidth) ? window.innerWidth : null,
+    viewportHeight: Number.isFinite(window.innerHeight) ? window.innerHeight : null,
+    screenWidth: Number.isFinite(window.screen?.width) ? window.screen.width : null,
+    screenHeight: Number.isFinite(window.screen?.height) ? window.screen.height : null,
+    colorDepth: Number.isFinite(window.screen?.colorDepth) ? window.screen.colorDepth : null,
+    campaign: {
+      utmSource: getQueryParam(params, 'utm_source'),
+      utmMedium: getQueryParam(params, 'utm_medium'),
+      utmCampaign: getQueryParam(params, 'utm_campaign'),
+      utmTerm: getQueryParam(params, 'utm_term'),
+      utmContent: getQueryParam(params, 'utm_content'),
+      gclid: getQueryParam(params, 'gclid'),
+      fbclid: getQueryParam(params, 'fbclid'),
+      ttclid: getQueryParam(params, 'ttclid'),
+      msclkid: getQueryParam(params, 'msclkid'),
+    },
+    connection: {
+      effectiveType: nav.connection?.effectiveType ?? null,
+      downlinkMbps: typeof nav.connection?.downlink === 'number' ? nav.connection.downlink : null,
+      rttMs: typeof nav.connection?.rtt === 'number' ? nav.connection.rtt : null,
+      saveData: typeof nav.connection?.saveData === 'boolean' ? nav.connection.saveData : null,
+    },
+  };
+};
+
 export default function LoginPage() {
   const [passkey, setPasskey] = useState('');
   const [error, setError] = useState('');
@@ -16,7 +102,7 @@ export default function LoginPage() {
     const res = await fetch('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ passkey }),
+      body: JSON.stringify({ passkey, client: buildClientContext() }),
     });
     setLoading(false);
     if (res.ok) {

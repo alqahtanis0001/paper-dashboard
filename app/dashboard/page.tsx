@@ -42,6 +42,13 @@ type ModelSignal = { model: string; signal: RawSignalState; confidence: number; 
 type NormalizedModelSignal = Omit<ModelSignal, 'signal'> & { signal: SignalState };
 type Meta = { action: 'BUY' | 'SELL' | 'NO_TRADE'; confidence: number; reason: string };
 type ActivityEvent = { id: string; eventType: string; actorRole: string; createdAt: string; metadata: Record<string, unknown> };
+type BlinkerSignal = {
+  model: string;
+  signal: SignalState;
+  confidence: number;
+  hitRate: number;
+  reason: string;
+};
 
 type ChartPreference = {
   selectedSymbol?: string | null;
@@ -58,6 +65,7 @@ type ChartBootstrapResponse = {
 
 const BAND_MULTIPLIER = 1.85;
 const KEEP_ALIVE_PING_INTERVAL_MS = 6 * 60 * 1000;
+const COMMITTEE_MODELS = ['Trend Agent', 'Momentum Agent', 'Volatility Agent', 'Volume Agent', 'Pattern Agent'] as const;
 
 const formatPrice = (value: number) => {
   const abs = Math.abs(value);
@@ -136,6 +144,19 @@ const signalLightClassName = (signal: SignalState) => {
   if (signal === 'SELL') return 'status-light status-light-sell';
   return 'status-light status-light-neutral';
 };
+
+const aiBlinkerClassName = (signal: SignalState) => {
+  if (signal === 'BUY') return 'ai-blinker-orb ai-blinker-orb-buy';
+  if (signal === 'SELL') return 'ai-blinker-orb ai-blinker-orb-sell';
+  return 'ai-blinker-orb ai-blinker-orb-neutral';
+};
+
+const blinkerSignalText = (signal: SignalState) => {
+  if (signal === 'NO_TRADE') return 'WAIT';
+  return signal;
+};
+
+const modelDisplayName = (model: string) => model.replace(' Agent', '');
 
 export default function DashboardPage() {
   const chartRef = useRef<HTMLDivElement>(null);
@@ -569,6 +590,30 @@ export default function DashboardPage() {
     [signals],
   );
 
+  const aiBlinkers = useMemo<BlinkerSignal[]>(
+    () =>
+      COMMITTEE_MODELS.map((model) => {
+        const signal = normalizedSignals.find((entry) => entry.model === model);
+        if (signal) {
+          return {
+            model,
+            signal: signal.signal,
+            confidence: signal.confidence,
+            hitRate: hitRates.agents[model] ?? 0,
+            reason: signal.reasons[0] ?? 'No reason available',
+          };
+        }
+        return {
+          model,
+          signal: 'NO_TRADE',
+          confidence: 0,
+          hitRate: hitRates.agents[model] ?? 0,
+          reason: 'Awaiting live signal',
+        };
+      }),
+    [normalizedSignals, hitRates.agents],
+  );
+
   const committeeSummary = useMemo(() => {
     const buy = normalizedSignals.filter((signal) => signal.signal === 'BUY').length;
     const sell = normalizedSignals.filter((signal) => signal.signal === 'SELL').length;
@@ -673,6 +718,18 @@ export default function DashboardPage() {
               <span style={styles.signalStats}>Updated {lastAiUpdate || '--'}</span>
             </div>
             <div style={styles.signalReason}>{meta.reason}</div>
+            <div className="ai-blinker-grid">
+              {aiBlinkers.map((s) => (
+                <div key={s.model} className="ai-blinker-card">
+                  <span className={aiBlinkerClassName(s.signal)}>
+                    <span className="ai-blinker-core">{blinkerSignalText(s.signal)}</span>
+                  </span>
+                  <strong className="ai-blinker-name">{modelDisplayName(s.model)}</strong>
+                  <span className="ai-blinker-stats">{s.confidence}% · hit {s.hitRate}%</span>
+                  <span className="ai-blinker-reason">{s.reason}</span>
+                </div>
+              ))}
+            </div>
             {normalizedSignals.map((s) => (
               <div key={s.model} style={{ marginTop: 8 }}>
                 <div style={styles.signalRow}>

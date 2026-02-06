@@ -716,7 +716,7 @@ export default function AdminPage() {
         </div>
       )}
 
-      <div className="glass" style={styles.panel}>
+      <div className="glass" style={{ ...styles.panel, order: 90 }}>
         <div style={styles.subHeaderRow}>
           <h2 style={styles.sectionTitle}>Runtime & Storage Profile</h2>
           <button type="button" onClick={() => void loadRuntimeInfo()} style={styles.quickBtn}>
@@ -767,7 +767,7 @@ export default function AdminPage() {
         ) : null}
       </div>
 
-      <div className="glass" style={styles.panel}>
+      <div className="glass" style={{ ...styles.panel, order: 91 }}>
         <div style={styles.subHeaderRow}>
           <h2 style={styles.sectionTitle}>User Access Snapshot</h2>
           <button type="button" onClick={() => void loadUserAccess()} style={styles.quickBtn}>

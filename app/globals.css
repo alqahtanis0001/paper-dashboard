@@ -111,11 +111,6 @@ button {
   color: #060b16;
 }
 
-.ai-blinker-name {
-  font-size: 12px;
-  letter-spacing: 0.2px;
-}
-
 .ai-blinker-stats {
   color: var(--muted);
   font-size: 11px;

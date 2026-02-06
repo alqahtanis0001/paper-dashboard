@@ -66,6 +66,41 @@ type ChartBootstrapResponse = {
 const BAND_MULTIPLIER = 1.85;
 const KEEP_ALIVE_PING_INTERVAL_MS = 6 * 60 * 1000;
 const COMMITTEE_MODELS = ['Trend Agent', 'Momentum Agent', 'Volatility Agent', 'Volume Agent', 'Pattern Agent'] as const;
+const AR_LOCALE = 'ar-SA';
+
+const SIGNAL_LABELS_AR: Record<SignalState, string> = {
+  BUY: 'شراء',
+  SELL: 'بيع',
+  NO_TRADE: 'حياد',
+};
+
+const ROLE_LABELS_AR: Record<string, string> = {
+  USER: 'مستخدم',
+  ADMIN: 'مشرف',
+};
+
+const EVENT_LABELS_AR: Record<string, string> = {
+  login_success: 'تسجيل دخول ناجح',
+  login_failed: 'فشل تسجيل الدخول',
+  trade_buy: 'شراء',
+  trade_sell: 'بيع',
+  withdrawal_request: 'طلب سحب',
+  withdrawal_approved: 'موافقة على السحب',
+  withdrawal_rejected: 'رفض السحب',
+};
+
+const API_ERROR_AR: Record<string, string> = {
+  'amountUsd must be > 0': 'يجب أن يكون مبلغ الشراء أكبر من 0.',
+  'Position already open': 'يوجد مركز مفتوح بالفعل.',
+  'amountUsd exceeds wallet cash after fees': 'قيمة الشراء تتجاوز الرصيد النقدي بعد الرسوم.',
+  'sellPercent must be between 0 and 100': 'نسبة البيع يجب أن تكون بين 0 و100.',
+  'No open position': 'لا يوجد مركز مفتوح.',
+  'Trade failed': 'فشلت الصفقة.',
+  Unauthorized: 'غير مصرح.',
+  Forbidden: 'غير مسموح.',
+  'Invalid payload': 'البيانات المرسلة غير صحيحة.',
+  'Too many attempts': 'محاولات كثيرة جدًا. حاول لاحقًا.',
+};
 
 const formatPrice = (value: number) => {
   const abs = Math.abs(value);
@@ -145,18 +180,48 @@ const signalLightClassName = (signal: SignalState) => {
   return 'status-light status-light-neutral';
 };
 
+const signalLabelAr = (signal: SignalState) => SIGNAL_LABELS_AR[signal];
+
+const formatTimeAr = (value: string | number | Date) => new Date(value).toLocaleTimeString(AR_LOCALE);
+
+const formatDateTimeAr = (value: string | number | Date) => new Date(value).toLocaleString(AR_LOCALE);
+
+const localizeApiError = (message: string) => API_ERROR_AR[message] ?? message;
+
+const localizeRole = (role: string) => ROLE_LABELS_AR[role] ?? role;
+
+const localizeEventType = (eventType: string) => EVENT_LABELS_AR[eventType] ?? eventType;
+
+const localizeReasonText = (text: string) =>
+  text
+    .replace(/Committee incomplete/g, 'اللجنة غير مكتملة')
+    .replace(/conservative no-trade/g, 'عدم تداول احترازي')
+    .replace(/BUY consensus/g, 'إجماع شراء')
+    .replace(/SELL consensus/g, 'إجماع بيع')
+    .replace(/BUY votes/g, 'أصوات الشراء')
+    .replace(/SELL votes/g, 'أصوات البيع')
+    .replace(/No-trade majority/g, 'أغلبية عدم التداول')
+    .replace(/Consensus below 4\/5; Meta remains conservative by default/g, 'الإجماع أقل من 4/5؛ والقرار الاحترازي هو عدم التداول')
+    .replace(/Conflict/g, 'تعارض')
+    .replace(/confidence/g, 'الثقة')
+    .replace(/edge/g, 'الفارق')
+    .replace(/awaiting live signal/gi, 'بانتظار إشارة مباشرة')
+    .replace(/Awaiting live signal/gi, 'بانتظار إشارة مباشرة')
+    .replace(/No reason available/gi, 'لا يوجد سبب متاح')
+    .replace(/BUY/g, 'شراء')
+    .replace(/SELL/g, 'بيع')
+    .replace(/NO_TRADE/g, 'بدون تداول')
+    .replace(/RSI oversold \(([^)]+)\)/g, 'RSI في تشبع بيعي ($1)')
+    .replace(/RSI overbought \(([^)]+)\)/g, 'RSI في تشبع شرائي ($1)')
+    .replace(/RSI neutral \(([^)]+)\)/g, 'RSI محايد ($1)');
+
 const aiBlinkerClassName = (signal: SignalState) => {
   if (signal === 'BUY') return 'ai-blinker-orb ai-blinker-orb-buy';
   if (signal === 'SELL') return 'ai-blinker-orb ai-blinker-orb-sell';
   return 'ai-blinker-orb ai-blinker-orb-neutral';
 };
 
-const blinkerSignalText = (signal: SignalState) => {
-  if (signal === 'NO_TRADE') return 'WAIT';
-  return signal;
-};
-
-const modelDisplayName = (model: string) => model.replace(' Agent', '');
+const blinkerSignalText = (signal: SignalState) => signalLabelAr(signal);
 
 export default function DashboardPage() {
   const chartRef = useRef<HTMLDivElement>(null);
@@ -179,7 +244,7 @@ export default function DashboardPage() {
   const [trades, setTrades] = useState<Trade[]>([]);
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [signals, setSignals] = useState<ModelSignal[]>([]);
-  const [meta, setMeta] = useState<Meta>({ action: 'NO_TRADE', confidence: 0, reason: 'Waiting for data' });
+  const [meta, setMeta] = useState<Meta>({ action: 'NO_TRADE', confidence: 0, reason: 'بانتظار البيانات' });
   const [hitRates, setHitRates] = useState<{ meta: number; agents: Record<string, number> }>({ meta: 0, agents: {} });
   const [lastAiUpdate, setLastAiUpdate] = useState('');
   const [metaStatusText, setMetaStatusText] = useState('');
@@ -411,9 +476,9 @@ export default function DashboardPage() {
         const absChange = c.close - c.open;
         const pct = ((c.close - c.open) / c.open) * 100;
         setTooltip(
-          `O:${formatPrice(c.open)} H:${formatPrice(c.high)} L:${formatPrice(c.low)} C:${formatPrice(c.close)} ` +
-          `Δ:${absChange >= 0 ? '+' : ''}${formatPrice(absChange)} (${pct.toFixed(2)}%) ` +
-          `V:${formatVolumeCompact(volume ?? Number.NaN)}`,
+          `افتتاح:${formatPrice(c.open)} أعلى:${formatPrice(c.high)} أدنى:${formatPrice(c.low)} إغلاق:${formatPrice(c.close)} ` +
+          `التغير:${absChange >= 0 ? '+' : ''}${formatPrice(absChange)} (${pct.toFixed(2)}%) ` +
+          `الحجم:${formatVolumeCompact(volume ?? Number.NaN)}`,
         );
       });
 
@@ -459,7 +524,7 @@ export default function DashboardPage() {
         if (payload.ai?.meta) setMeta(payload.ai.meta);
         if (payload.ai?.hitRates) setHitRates(payload.ai.hitRates);
         if (typeof payload.ai?.lastSignalAt === 'number') {
-          setLastAiUpdate(new Date(payload.ai.lastSignalAt).toLocaleTimeString());
+          setLastAiUpdate(formatTimeAr(payload.ai.lastSignalAt));
         }
       });
       socket.on('meta_status', (payload: { text?: string }) => {
@@ -486,7 +551,7 @@ export default function DashboardPage() {
         setSignals(payload.signals);
         setMeta(payload.meta);
         setHitRates(payload.hitRates);
-        setLastAiUpdate(new Date().toLocaleTimeString());
+        setLastAiUpdate(formatTimeAr(new Date()));
         setMetaStatusText(payload.meta.reason);
       });
     };
@@ -543,7 +608,7 @@ export default function DashboardPage() {
         position: t.side === 'BUY' ? 'belowBar' : 'aboveBar',
         color: t.side === 'BUY' ? '#3cff8d' : '#ff5c8d',
         shape: t.side === 'BUY' ? 'arrowUp' : 'arrowDown',
-        text: `${t.side} $${t.sizeUsd.toFixed(2)} @ ${(t.fillPrice ?? t.price).toFixed(2)} · fee ${(t.feeUsd ?? 0).toFixed(2)} · slip ${(t.slippageUsd ?? 0).toFixed(2)} · ${(t.latencyMs ?? 0)}ms · ${new Date(t.time).toLocaleTimeString()}`,
+        text: `${signalLabelAr(t.side)} $${t.sizeUsd.toFixed(2)} @ ${(t.fillPrice ?? t.price).toFixed(2)} · رسوم ${(t.feeUsd ?? 0).toFixed(2)} · انزلاق ${(t.slippageUsd ?? 0).toFixed(2)} · ${(t.latencyMs ?? 0)}ms · ${formatTimeAr(t.time)}`,
       };
     });
     markersApi.current?.setMarkers(markers);
@@ -572,10 +637,11 @@ export default function DashboardPage() {
     const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      setWarning(body.error ?? 'Trade failed');
+      const errorMessage = typeof body.error === 'string' ? body.error : 'Trade failed';
+      setWarning(localizeApiError(errorMessage));
       return;
     }
-    if (meta.action !== side && meta.action !== 'NO_TRADE') setWarning(`Meta-AI disagrees: ${meta.reason}`);
+    if (meta.action !== side && meta.action !== 'NO_TRADE') setWarning(`الذكاء الفوقي غير متوافق: ${localizeReasonText(meta.reason)}`);
     else setWarning('');
     fetchWallet();
     fetchActivity();
@@ -608,7 +674,7 @@ export default function DashboardPage() {
           signal: 'NO_TRADE',
           confidence: 0,
           hitRate: hitRates.agents[model] ?? 0,
-          reason: 'Awaiting live signal',
+          reason: 'بانتظار إشارة مباشرة',
         };
       }),
     [normalizedSignals, hitRates.agents],
@@ -637,12 +703,12 @@ export default function DashboardPage() {
   const tradeTape = useMemo(() => trades.slice(0, 20), [trades]);
 
   return (
-    <div style={styles.page}>
+    <div style={styles.page} dir="rtl" lang="ar">
       <div className="glass" style={styles.row}>
-        <div>Cash ${wallet?.cashBalance.toFixed(2) ?? '--'}</div>
-        <div>Equity ${(wallet?.liveEquity ?? wallet?.equity ?? 0).toFixed(2)}</div>
-        <div>Position ${(wallet?.positionValue ?? 0).toFixed(2)}</div>
-        <div style={{ color: (wallet?.pnlTotal ?? 0) >= 0 ? '#3cff8d' : '#ff5c8d' }}>PnL ${wallet?.pnlTotal.toFixed(2) ?? '--'}</div>
+        <div>الرصيد النقدي ${wallet?.cashBalance.toFixed(2) ?? '--'}</div>
+        <div>صافي القيمة ${(wallet?.liveEquity ?? wallet?.equity ?? 0).toFixed(2)}</div>
+        <div>قيمة المركز ${(wallet?.positionValue ?? 0).toFixed(2)}</div>
+        <div style={{ color: (wallet?.pnlTotal ?? 0) >= 0 ? '#3cff8d' : '#ff5c8d' }}>الأرباح/الخسائر ${wallet?.pnlTotal.toFixed(2) ?? '--'}</div>
       </div>
 
       <div className="glass" style={styles.chartShell}>
@@ -659,29 +725,29 @@ export default function DashboardPage() {
           </select>
         </div>
         <div style={styles.legendRow}>
-          <span style={{ ...styles.legendItem, color: '#ffd166' }}>EMA 20</span>
-          <span style={{ ...styles.legendItem, color: '#6ea8ff' }}>EMA 50</span>
-          <span style={{ ...styles.legendItem, color: 'rgba(255,92,141,0.85)' }}>Upper Band</span>
-          <span style={{ ...styles.legendItem, color: 'rgba(92,255,173,0.85)' }}>Lower Band</span>
+          <span style={{ ...styles.legendItem, color: '#ffd166' }}>المتوسط الأسي 20</span>
+          <span style={{ ...styles.legendItem, color: '#6ea8ff' }}>المتوسط الأسي 50</span>
+          <span style={{ ...styles.legendItem, color: 'rgba(255,92,141,0.85)' }}>النطاق العلوي</span>
+          <span style={{ ...styles.legendItem, color: 'rgba(92,255,173,0.85)' }}>النطاق السفلي</span>
         </div>
         <div style={styles.chartViewport}>
           <div ref={chartRef} style={styles.chartCanvas} />
         </div>
-        <div style={{ color: 'var(--muted)', marginTop: 6 }}>{tooltip || metaStatusText || meta.reason}</div>
+        <div style={{ color: 'var(--muted)', marginTop: 6 }}>{tooltip || localizeReasonText(metaStatusText || meta.reason)}</div>
       </div>
 
       <div style={styles.tradeGrid}>
         <div className="glass" style={styles.card}>
-          <h3>Buy (B)</h3>
+          <h3>شراء (B)</h3>
           <input ref={buyInputRef} value={buyAmount} onChange={(e) => setBuyAmount(e.target.value)} type="number" style={styles.input} />
           <div style={styles.quickRow}>{[0.25, 0.5, 1].map((pct) => <button key={pct} style={styles.quickBtn} onClick={() => setBuyAmount(((wallet?.cashBalance ?? 0) * pct).toFixed(2))}>{pct * 100}%</button>)}</div>
-          <button style={{ ...styles.button, background: '#ff5c8d' }} onClick={() => act('BUY', { amountUsd: Number(buyAmount) })}>Deploy</button>
+          <button style={{ ...styles.button, background: '#ff5c8d' }} onClick={() => act('BUY', { amountUsd: Number(buyAmount) })}>تنفيذ الشراء</button>
         </div>
         <div className="glass" style={styles.card}>
-          <h3>Sell (S)</h3>
+          <h3>بيع (S)</h3>
           <input ref={sellInputRef} type="number" value={sellPercent} min={1} max={100} onChange={(e) => setSellPercent(Math.max(1, Math.min(100, Number(e.target.value) || 1)))} style={styles.input} />
           <div style={styles.quickRow}>{[25, 50, 100].map((pct) => <button key={pct} style={styles.quickBtn} onClick={() => setSellPercent(pct)}>{pct}%</button>)}</div>
-          <button style={{ ...styles.button, background: '#3cff8d', color: '#07110b' }} onClick={() => act('SELL', { sellPercent })}>Sell {sellPercent}%</button>
+          <button style={{ ...styles.button, background: '#3cff8d', color: '#07110b' }} onClick={() => act('SELL', { sellPercent })}>بيع {sellPercent}%</button>
         </div>
       </div>
 
@@ -689,69 +755,57 @@ export default function DashboardPage() {
 
       <div style={styles.panels}>
         <div className="glass" style={styles.card}>
-          <button style={styles.toggle} onClick={() => setCollapsed((v) => ({ ...v, ai: !v.ai }))}><h3>AI Feed</h3></button>
+          <button style={styles.toggle} onClick={() => setCollapsed((v) => ({ ...v, ai: !v.ai }))}><h3>لوحة الذكاء الاصطناعي</h3></button>
           {!collapsed.ai && <>
             <div style={styles.signalRow}>
               <span className={signalLightClassName(meta.action)} />
-              <strong>Meta</strong>
-              <span>{meta.action}</span>
-              <span style={styles.signalStats}>({meta.confidence}% · hit {hitRates.meta}%)</span>
+              <strong>الفوقي</strong>
+              <span>{signalLabelAr(meta.action)}</span>
+              <span style={styles.signalStats}>({meta.confidence}% · إصابة {hitRates.meta}%)</span>
             </div>
             <div style={styles.summaryRow}>
-              <span style={styles.voteChipBuy}>BUY {committeeSummary.buy}</span>
-              <span style={styles.voteChipSell}>SELL {committeeSummary.sell}</span>
-              <span style={styles.voteChipNeutral}>NO TRADE {committeeSummary.noTrade}</span>
+              <span style={styles.voteChipBuy}>شراء {committeeSummary.buy}</span>
+              <span style={styles.voteChipSell}>بيع {committeeSummary.sell}</span>
+              <span style={styles.voteChipNeutral}>حياد {committeeSummary.noTrade}</span>
             </div>
             <div style={styles.summaryRow}>
               <span style={committeeSummary.hasStrongConsensus ? styles.statusChipPass : styles.statusChipWarn}>
-                Consensus {committeeSummary.hasStrongConsensus ? 'STRONG' : 'WEAK'}
+                الإجماع {committeeSummary.hasStrongConsensus ? 'قوي' : 'ضعيف'}
               </span>
               <span style={committeeSummary.confidenceGatePass ? styles.statusChipPass : styles.statusChipWarn}>
-                Confidence Gate {committeeSummary.confidenceGatePass ? 'PASS' : 'FAIL'}
+                بوابة الثقة {committeeSummary.confidenceGatePass ? 'ناجحة' : 'فاشلة'}
               </span>
               <span style={committeeSummary.hasConflict ? styles.statusChipWarn : styles.statusChipInfo}>
-                {committeeSummary.hasConflict ? 'Conflict Detected' : 'No Conflict'}
+                {committeeSummary.hasConflict ? 'تم رصد تعارض' : 'بدون تعارض'}
               </span>
               <span style={committeeSummary.decisionAligned ? styles.statusChipInfo : styles.statusChipWarn}>
-                {committeeSummary.decisionAligned ? 'Decision Aligned' : 'Decision Caution'}
+                {committeeSummary.decisionAligned ? 'القرار متوافق' : 'القرار يحتاج حذر'}
               </span>
-              <span style={styles.signalStats}>Updated {lastAiUpdate || '--'}</span>
+              <span style={styles.signalStats}>آخر تحديث {lastAiUpdate || '--'}</span>
             </div>
-            <div style={styles.signalReason}>{meta.reason}</div>
+            <div style={styles.signalReason}>{localizeReasonText(meta.reason)}</div>
             <div className="ai-blinker-grid">
               {aiBlinkers.map((s) => (
                 <div key={s.model} className="ai-blinker-card">
                   <span className={aiBlinkerClassName(s.signal)}>
                     <span className="ai-blinker-core">{blinkerSignalText(s.signal)}</span>
                   </span>
-                  <strong className="ai-blinker-name">{modelDisplayName(s.model)}</strong>
-                  <span className="ai-blinker-stats">{s.confidence}% · hit {s.hitRate}%</span>
-                  <span className="ai-blinker-reason">{s.reason}</span>
+                  <span className="ai-blinker-stats">{s.confidence}% · إصابة {s.hitRate}%</span>
+                  <span className="ai-blinker-reason">{localizeReasonText(s.reason)}</span>
                 </div>
               ))}
             </div>
-            {normalizedSignals.map((s) => (
-              <div key={s.model} style={{ marginTop: 8 }}>
-                <div style={styles.signalRow}>
-                  <span className={signalLightClassName(s.signal)} />
-                  <strong>{s.model}</strong>
-                  <span>{s.signal}</span>
-                  <span style={styles.signalStats}>({s.confidence}% · hit {hitRates.agents[s.model] ?? 0}%)</span>
-                </div>
-                <div style={{ color: 'var(--muted)', fontSize: 12 }}>{s.reasons.join(' · ')}</div>
-              </div>
-            ))}
           </>}
         </div>
 
         <div className="glass" style={styles.card}>
-          <button style={styles.toggle} onClick={() => setCollapsed((v) => ({ ...v, tape: !v.tape }))}><h3>Trade Tape (20)</h3></button>
-          {!collapsed.tape && tradeTape.map((t) => <div key={t.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}><span>{new Date(t.time).toLocaleTimeString()}</span><span>{t.side}</span><span>${t.sizeUsd.toFixed(0)}</span></div>)}
+          <button style={styles.toggle} onClick={() => setCollapsed((v) => ({ ...v, tape: !v.tape }))}><h3>سجل الصفقات (20)</h3></button>
+          {!collapsed.tape && tradeTape.map((t) => <div key={t.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}><span>{formatTimeAr(t.time)}</span><span>{signalLabelAr(t.side)}</span><span>${t.sizeUsd.toFixed(0)}</span></div>)}
         </div>
 
         <div className="glass" style={styles.card}>
-          <button style={styles.toggle} onClick={() => setCollapsed((v) => ({ ...v, activity: !v.activity }))}><h3>Activity Feed</h3></button>
-          {!collapsed.activity && events.slice(0, 20).map((e) => <div key={e.id} style={{ borderTop: '1px solid var(--border)', paddingTop: 6, marginTop: 6, fontSize: 12 }}><strong>{e.eventType}</strong> · {e.actorRole}<div style={{ color: 'var(--muted)' }}>{new Date(e.createdAt).toLocaleString()}</div></div>)}
+          <button style={styles.toggle} onClick={() => setCollapsed((v) => ({ ...v, activity: !v.activity }))}><h3>سجل النشاط</h3></button>
+          {!collapsed.activity && events.slice(0, 20).map((e) => <div key={e.id} style={{ borderTop: '1px solid var(--border)', paddingTop: 6, marginTop: 6, fontSize: 12 }}><strong>{localizeEventType(e.eventType)}</strong> · {localizeRole(e.actorRole)}<div style={{ color: 'var(--muted)' }}>{formatDateTimeAr(e.createdAt)}</div></div>)}
         </div>
       </div>
     </div>
@@ -797,7 +851,7 @@ const styles: Record<string, CSSProperties> = {
   quickRow: { display: 'flex', gap: 6, marginTop: 6, marginBottom: 8 },
   quickBtn: { border: '1px solid var(--border)', borderRadius: 8, padding: '6px 9px', background: 'transparent', color: 'var(--text)' },
   button: { width: '100%', border: 'none', borderRadius: 10, padding: '0.8rem', fontWeight: 700, color: '#fff' },
-  toggle: { width: '100%', textAlign: 'left', border: 'none', background: 'transparent', color: 'inherit', cursor: 'pointer' },
+  toggle: { width: '100%', textAlign: 'right', border: 'none', background: 'transparent', color: 'inherit', cursor: 'pointer' },
   signalRow: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 },
   signalStats: { color: 'var(--muted)', fontSize: 12 },
   summaryRow: { display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginTop: 6 },

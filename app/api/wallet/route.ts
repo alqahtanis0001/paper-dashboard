@@ -4,6 +4,7 @@ import { getWallet } from '@/lib/wallet';
 import { prisma } from '@/lib/prisma';
 import { dealEngine } from '@/lib/engine/dealEngine';
 import { logServerAction } from '@/lib/serverLogger';
+import { ensureWithdrawConfig } from '@/lib/withdrawals';
 
 export async function GET(req: NextRequest) {
   logServerAction('wallet.get', 'start');
@@ -14,8 +15,15 @@ export async function GET(req: NextRequest) {
   }
 
   const wallet = await getWallet();
-  const openPosition = await prisma.position.findFirst({ where: { isOpen: true } });
-  const trades = await prisma.trade.findMany({ orderBy: { time: 'desc' }, take: 20 });
+  const [openPosition, trades, pendingAggregate, withdrawConfig] = await Promise.all([
+    prisma.position.findFirst({ where: { isOpen: true } }),
+    prisma.trade.findMany({ orderBy: { time: 'desc' }, take: 20 }),
+    prisma.withdrawalRequest.aggregate({
+      where: { status: 'PENDING' },
+      _sum: { amount: true },
+    }),
+    ensureWithdrawConfig(),
+  ]);
 
   let positionValue = 0;
   let unrealizedPnl = 0;
@@ -27,8 +35,15 @@ export async function GET(req: NextRequest) {
   }
 
   const liveEquity = wallet.cashBalance + positionValue;
+  const reservedWithdrawalAmount = pendingAggregate._sum.amount ?? 0;
+  const withdrawableBalance = Math.max(0, wallet.cashBalance - reservedWithdrawalAmount);
 
-  logServerAction('wallet.get', 'success', { hasOpenPosition: !!openPosition, tradesCount: trades.length });
+  logServerAction('wallet.get', 'success', {
+    hasOpenPosition: !!openPosition,
+    tradesCount: trades.length,
+    taxPercent: withdrawConfig.taxPercent,
+    withdrawableBalance,
+  });
   return NextResponse.json({
     wallet: {
       ...wallet,
@@ -36,11 +51,17 @@ export async function GET(req: NextRequest) {
       liveEquity,
       positionValue,
       unrealizedPnl,
+      withdrawTaxPercent: withdrawConfig.taxPercent,
+      reservedWithdrawalAmount,
+      withdrawableBalance,
     },
     openPosition,
     trades,
     positionValue,
     unrealizedPnl,
     liveEquity,
+    withdrawTaxPercent: withdrawConfig.taxPercent,
+    reservedWithdrawalAmount,
+    withdrawableBalance,
   });
 }

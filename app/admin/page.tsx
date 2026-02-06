@@ -37,7 +37,11 @@ type WithdrawalRequest = {
   id: string;
   time: string;
   amount: number;
+  taxPercent: number;
+  taxAmount: number;
+  netAmount: number;
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  processedAt: string | null;
 };
 
 type JumpDraft = {
@@ -216,11 +220,21 @@ const statusColor: Record<DealStatus, string> = {
   RUNNING: '#5df3a6',
   FINISHED: '#8aa0cc',
 };
+const withdrawalStatusColor: Record<WithdrawalRequest['status'], string> = {
+  PENDING: '#ffd166',
+  APPROVED: '#5df3a6',
+  REJECTED: '#ff5c8d',
+};
 
 const fromLocalInput = (localDateTime: string) => dayjs(localDateTime).toISOString();
 const nextStartLocal = (mins: number) => dayjs().add(mins, 'minute').format('YYYY-MM-DDTHH:mm');
 const formatMoney = (amount: number) =>
   amount.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+const formatPercent = (value: number) =>
+  value.toLocaleString(undefined, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
@@ -256,6 +270,8 @@ export default function AdminPage() {
   const [savingDeal, setSavingDeal] = useState(false);
   const [busyDealId, setBusyDealId] = useState<string | null>(null);
   const [busyWithdrawalId, setBusyWithdrawalId] = useState<string | null>(null);
+  const [withdrawTaxPercent, setWithdrawTaxPercent] = useState(0);
+  const [savingWithdrawTax, setSavingWithdrawTax] = useState(false);
 
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [statusFilter, setStatusFilter] = useState<'ALL' | DealStatus>('ALL');
@@ -299,11 +315,14 @@ export default function AdminPage() {
       return;
     }
     if (!res.ok) {
-      setError('Failed to load pending withdrawals.');
+      setError('Failed to load withdrawals.');
       return;
     }
-    const body = await res.json();
+    const body = (await res.json()) as { requests?: WithdrawalRequest[]; taxPercent?: number };
     setWithdrawals(body.requests ?? []);
+    if (typeof body.taxPercent === 'number' && Number.isFinite(body.taxPercent)) {
+      setWithdrawTaxPercent(body.taxPercent);
+    }
   }, []);
 
   const applyControlState = useCallback((next: ControlState) => {
@@ -617,8 +636,47 @@ export default function AdminPage() {
       return;
     }
 
-    setInfo(`Withdrawal ${action.toLowerCase()}d.`);
+    setInfo(action === 'APPROVE' ? 'Withdrawal approved.' : 'Withdrawal rejected.');
     await refreshAll();
+  };
+
+  const saveWithdrawTax = async () => {
+    setError('');
+    setInfo('');
+
+    if (!Number.isFinite(withdrawTaxPercent) || withdrawTaxPercent < 0 || withdrawTaxPercent > 100) {
+      setError('Tax % must be between 0 and 100.');
+      return;
+    }
+
+    setSavingWithdrawTax(true);
+    const res = await fetch('/api/admin/withdraw-tax', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ taxPercent: withdrawTaxPercent }),
+    });
+    setSavingWithdrawTax(false);
+
+    if (res.status === 401) {
+      setAuthed(false);
+      setError('Admin session expired. Please log in again.');
+      return;
+    }
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      setError(body.error ?? 'Failed to update withdrawal tax.');
+      return;
+    }
+
+    const body = (await res.json()) as { taxPercent?: number };
+    if (typeof body.taxPercent === 'number') {
+      setWithdrawTaxPercent(body.taxPercent);
+      setInfo(`Withdrawal tax updated to ${formatPercent(body.taxPercent)}%.`);
+    } else {
+      setInfo('Withdrawal tax updated.');
+    }
+    await loadWithdrawals();
   };
 
   const filteredDeals = useMemo(() => {
@@ -690,7 +748,7 @@ export default function AdminPage() {
       <div style={styles.headerRow}>
         <div>
           <h1 style={{ marginBottom: 4 }}>Admin Dashboard</h1>
-          <div style={styles.mutedText}>Manage scenarios, monitor execution, and process pending withdrawals.</div>
+          <div style={styles.mutedText}>Manage scenarios, monitor execution, and control withdrawals.</div>
         </div>
         <div style={styles.headerActions}>
           <button onClick={() => void refreshAll()} style={{ ...styles.button, width: 'auto' }}>
@@ -1221,34 +1279,65 @@ export default function AdminPage() {
           </div>
 
           <div className="glass" style={styles.panel}>
-            <h2 style={styles.sectionTitle}>Pending Withdrawals</h2>
+            <div style={styles.subHeaderRow}>
+              <h2 style={styles.sectionTitle}>Withdrawals & History</h2>
+              <div style={styles.inlineControls}>
+                <input
+                  style={styles.inputSmall}
+                  type="number"
+                  min={0}
+                  max={100}
+                  step="0.01"
+                  value={withdrawTaxPercent}
+                  onChange={(e) => {
+                    const next = Number(e.target.value);
+                    setWithdrawTaxPercent(Number.isFinite(next) ? next : 0);
+                  }}
+                  placeholder="Tax %"
+                />
+                <button type="button" onClick={() => void saveWithdrawTax()} style={styles.quickBtn} disabled={savingWithdrawTax}>
+                  {savingWithdrawTax ? 'Saving...' : 'Save tax %'}
+                </button>
+              </div>
+            </div>
+            <div style={{ ...styles.mutedText, marginTop: 6 }}>
+              Current withdrawal tax: {formatPercent(withdrawTaxPercent)}%
+            </div>
             <div style={{ marginTop: 10, display: 'grid', gap: 10 }}>
               {loadingWithdrawals && <div style={styles.mutedText}>Loading withdrawals...</div>}
-              {!loadingWithdrawals && withdrawals.length === 0 && <div style={styles.mutedText}>No pending requests.</div>}
+              {!loadingWithdrawals && withdrawals.length === 0 && <div style={styles.mutedText}>No withdrawal requests yet.</div>}
 
               {!loadingWithdrawals && withdrawals.map((request) => (
                 <div key={request.id} className="glass" style={styles.dealCard}>
                   <div style={styles.subHeaderRow}>
-                    <strong>${formatMoney(request.amount)}</strong>
-                    <span style={{ ...styles.badge, color: '#ffd166', borderColor: '#ffd166' }}>{request.status}</span>
+                    <strong>Gross ${formatMoney(request.amount)} · Net ${formatMoney(request.netAmount)}</strong>
+                    <span style={{ ...styles.badge, color: withdrawalStatusColor[request.status], borderColor: withdrawalStatusColor[request.status] }}>
+                      {request.status}
+                    </span>
                   </div>
+                  <div style={styles.mutedText}>Tax {formatPercent(request.taxPercent)}% · Tax amount ${formatMoney(request.taxAmount)}</div>
                   <div style={styles.mutedText}>Requested {dayjs(request.time).format('MMM D, YYYY HH:mm:ss')}</div>
-                  <div style={styles.actionRow}>
-                    <button
-                      onClick={() => void handleWithdrawal(request.id, 'APPROVE')}
-                      disabled={busyWithdrawalId === request.id}
-                      style={{ ...styles.quickBtn, color: '#5df3a6', borderColor: '#5df3a6' }}
-                    >
-                      Approve
-                    </button>
-                    <button
-                      onClick={() => void handleWithdrawal(request.id, 'REJECT')}
-                      disabled={busyWithdrawalId === request.id}
-                      style={styles.dangerBtn}
-                    >
-                      Reject
-                    </button>
+                  <div style={styles.mutedText}>
+                    Processed {request.processedAt ? dayjs(request.processedAt).format('MMM D, YYYY HH:mm:ss') : '--'}
                   </div>
+                  {request.status === 'PENDING' ? (
+                    <div style={styles.actionRow}>
+                      <button
+                        onClick={() => void handleWithdrawal(request.id, 'APPROVE')}
+                        disabled={busyWithdrawalId === request.id}
+                        style={{ ...styles.quickBtn, color: '#5df3a6', borderColor: '#5df3a6' }}
+                      >
+                        Approve
+                      </button>
+                      <button
+                        onClick={() => void handleWithdrawal(request.id, 'REJECT')}
+                        disabled={busyWithdrawalId === request.id}
+                        style={styles.dangerBtn}
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </div>

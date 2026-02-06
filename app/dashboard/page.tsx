@@ -22,7 +22,17 @@ import {
   normalizeGraphTimeframe,
 } from '@/lib/engine/graphModes';
 
-type Wallet = { cashBalance: number; equity: number; liveEquity?: number; positionValue?: number; unrealizedPnl?: number; pnlTotal: number };
+type Wallet = {
+  cashBalance: number;
+  equity: number;
+  liveEquity?: number;
+  positionValue?: number;
+  unrealizedPnl?: number;
+  pnlTotal: number;
+  withdrawTaxPercent?: number;
+  reservedWithdrawalAmount?: number;
+  withdrawableBalance?: number;
+};
 type Trade = {
   id: string;
   time: string;
@@ -100,6 +110,9 @@ const API_ERROR_AR: Record<string, string> = {
   Forbidden: 'غير مسموح.',
   'Invalid payload': 'البيانات المرسلة غير صحيحة.',
   'Too many attempts': 'محاولات كثيرة جدًا. حاول لاحقًا.',
+  'Invalid amount': 'قيمة السحب غير صحيحة.',
+  'Request already processed': 'تمت معالجة الطلب مسبقًا.',
+  'Insufficient wallet cash at approval time': 'الرصيد النقدي غير كافٍ للموافقة على السحب.',
 };
 
 const formatPrice = (value: number) => {
@@ -250,6 +263,9 @@ export default function DashboardPage() {
   const [metaStatusText, setMetaStatusText] = useState('');
   const [buyAmount, setBuyAmount] = useState('');
   const [sellPercent, setSellPercent] = useState(100);
+  const [withdrawAmount, setWithdrawAmount] = useState('');
+  const [withdrawBusy, setWithdrawBusy] = useState(false);
+  const [withdrawNotice, setWithdrawNotice] = useState('');
   const [warning, setWarning] = useState('');
   const [tooltip, setTooltip] = useState('');
   const [selectedSymbol, setSelectedSymbol] = useState<GraphMode>('AUTO');
@@ -647,6 +663,49 @@ export default function DashboardPage() {
     fetchActivity();
   };
 
+  const withdrawTaxPercent = wallet?.withdrawTaxPercent ?? 0;
+  const reservedWithdrawalAmount = wallet?.reservedWithdrawalAmount ?? 0;
+  const withdrawableBalance = wallet?.withdrawableBalance ?? wallet?.cashBalance ?? 0;
+
+  const withdrawPreview = useMemo(() => {
+    const amount = Number(withdrawAmount);
+    if (!Number.isFinite(amount) || amount <= 0) return null;
+    const taxAmount = Math.round((((amount * withdrawTaxPercent) / 100) + Number.EPSILON) * 100) / 100;
+    const netAmount = Math.round((Math.max(0, amount - taxAmount) + Number.EPSILON) * 100) / 100;
+    return { amount, taxAmount, netAmount };
+  }, [withdrawAmount, withdrawTaxPercent]);
+
+  const requestWithdrawal = async () => {
+    setWarning('');
+    setWithdrawNotice('');
+
+    const amount = Number(withdrawAmount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setWithdrawNotice('يرجى إدخال مبلغ سحب صحيح أكبر من صفر.');
+      return;
+    }
+
+    setWithdrawBusy(true);
+    const res = await fetch('/api/withdraw', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ amount }),
+    });
+    setWithdrawBusy(false);
+
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const errorMessage = typeof body.error === 'string' ? body.error : 'تعذر إرسال طلب السحب.';
+      setWithdrawNotice(localizeApiError(errorMessage));
+      return;
+    }
+
+    setWithdrawAmount('');
+    setWithdrawNotice('تم إرسال طلب السحب بنجاح. الطلب بانتظار موافقة الإدارة.');
+    fetchWallet();
+    fetchActivity();
+  };
+
   const normalizedSignals = useMemo<NormalizedModelSignal[]>(
     () =>
       signals.map((signal) => ({
@@ -709,6 +768,8 @@ export default function DashboardPage() {
         <div>صافي القيمة ${(wallet?.liveEquity ?? wallet?.equity ?? 0).toFixed(2)}</div>
         <div>قيمة المركز ${(wallet?.positionValue ?? 0).toFixed(2)}</div>
         <div style={{ color: (wallet?.pnlTotal ?? 0) >= 0 ? '#3cff8d' : '#ff5c8d' }}>الأرباح/الخسائر ${wallet?.pnlTotal.toFixed(2) ?? '--'}</div>
+        <div>ضريبة السحب {withdrawTaxPercent.toFixed(2)}%</div>
+        <div>المتاح للسحب ${withdrawableBalance.toFixed(2)}</div>
       </div>
 
       <div className="glass" style={styles.chartShell}>
@@ -748,6 +809,42 @@ export default function DashboardPage() {
           <input ref={sellInputRef} type="number" value={sellPercent} min={1} max={100} onChange={(e) => setSellPercent(Math.max(1, Math.min(100, Number(e.target.value) || 1)))} style={styles.input} />
           <div style={styles.quickRow}>{[25, 50, 100].map((pct) => <button key={pct} style={styles.quickBtn} onClick={() => setSellPercent(pct)}>{pct}%</button>)}</div>
           <button style={{ ...styles.button, background: '#3cff8d', color: '#07110b' }} onClick={() => act('SELL', { sellPercent })}>بيع {sellPercent}%</button>
+        </div>
+        <div className="glass" style={styles.card}>
+          <h3>سحب</h3>
+          <div style={styles.signalStats}>الضريبة الحالية: {withdrawTaxPercent.toFixed(2)}%</div>
+          <input
+            value={withdrawAmount}
+            onChange={(e) => setWithdrawAmount(e.target.value)}
+            type="number"
+            min={0}
+            step="0.01"
+            placeholder="أدخل مبلغ السحب"
+            style={styles.input}
+          />
+          <div style={styles.quickRow}>
+            {[0.25, 0.5, 1].map((pct) => (
+              <button key={pct} style={styles.quickBtn} onClick={() => setWithdrawAmount((withdrawableBalance * pct).toFixed(2))}>
+                {pct * 100}%
+              </button>
+            ))}
+          </div>
+          {withdrawPreview && (
+            <div style={styles.summaryRow}>
+              <span style={styles.statusChipInfo}>الإجمالي ${withdrawPreview.amount.toFixed(2)}</span>
+              <span style={styles.statusChipWarn}>الضريبة ${withdrawPreview.taxAmount.toFixed(2)}</span>
+              <span style={styles.statusChipPass}>الصافي ${withdrawPreview.netAmount.toFixed(2)}</span>
+            </div>
+          )}
+          <div style={styles.signalStats}>محجوز لطلبات معلّقة: ${reservedWithdrawalAmount.toFixed(2)}</div>
+          <button style={{ ...styles.button, background: '#ffd166', color: '#121212' }} onClick={() => void requestWithdrawal()} disabled={withdrawBusy}>
+            {withdrawBusy ? 'جاري الإرسال...' : 'إرسال طلب السحب'}
+          </button>
+          {withdrawNotice && (
+            <div style={{ color: withdrawNotice.startsWith('تم ') ? '#5df3a6' : '#ffb347', fontSize: 12, marginTop: 8 }}>
+              {withdrawNotice}
+            </div>
+          )}
         </div>
       </div>
 
@@ -814,7 +911,7 @@ export default function DashboardPage() {
 
 const styles: Record<string, CSSProperties> = {
   page: { maxWidth: 1200, margin: '0 auto', padding: '1rem', display: 'flex', flexDirection: 'column', gap: 10 },
-  row: { display: 'flex', gap: 16, padding: 12 },
+  row: { display: 'flex', gap: 16, padding: 12, flexWrap: 'wrap' },
   chartShell: {
     padding: 12,
     position: 'relative',

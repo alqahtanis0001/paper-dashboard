@@ -11,7 +11,15 @@ export async function GET(req: NextRequest) {
     return authErrorResponse(error);
   }
 
-  const events = await prisma.auditLog.findMany({ orderBy: { createdAt: 'desc' }, take: 50 });
+  const events = await prisma.auditLog.findMany({
+    where: {
+      eventType: {
+        notIn: ['withdrawal_requested', 'withdrawal_approved', 'withdrawal_rejected', 'withdraw_tax_updated'],
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 50,
+  });
   logServerAction('activity.get', 'success', { count: events.length });
   return NextResponse.json({ events });
 }

@@ -151,10 +151,24 @@ model DealJump {
 }
 
 model WithdrawalRequest {
-  id     String           @id @default(uuid())
-  time   DateTime         @default(now())
-  amount Float
-  status WithdrawalStatus @default(PENDING)
+  id          String           @id @default(uuid())
+  time        DateTime         @default(now())
+  amount      Float
+  taxPercent  Float            @default(0)
+  taxAmount   Float            @default(0)
+  netAmount   Float            @default(0)
+  status      WithdrawalStatus @default(PENDING)
+  processedAt DateTime?
+
+  @@index([time])
+  @@index([status, time])
+}
+
+model WithdrawConfig {
+  id         String   @id @default("global")
+  taxPercent Float    @default(5)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 }
 
 model AiSignalLog {

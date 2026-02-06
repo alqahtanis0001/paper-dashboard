@@ -46,8 +46,19 @@ export async function POST(req: NextRequest) {
   const quantity = amountUsd / fillPrice;
   const feeUsd = unitFeeUsd * quantity;
   const slippageUsd = unitSlippageUsd * quantity;
+  const pendingAggregate = await prisma.withdrawalRequest.aggregate({
+    where: { status: 'PENDING' },
+    _sum: { amount: true },
+  });
+  const reservedWithdrawalAmount = pendingAggregate._sum.amount ?? 0;
+  const availableCashForTrading = Math.max(0, wallet.cashBalance - reservedWithdrawalAmount);
 
-  if (wallet.cashBalance < amountUsd + feeUsd) {
+  if (availableCashForTrading < amountUsd + feeUsd) {
+    logServerAction('trade.buy', 'warn', {
+      reason: 'cash_reserved_for_withdrawals',
+      reservedWithdrawalAmount,
+      availableCashForTrading,
+    });
     return NextResponse.json({ error: 'amountUsd exceeds wallet cash after fees' }, { status: 400 });
   }
 

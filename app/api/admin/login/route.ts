@@ -4,18 +4,11 @@ import { z } from 'zod';
 import { assertLoginAllowed, getClientIp, hashIp, recordLoginAttempt } from '@/lib/security';
 import { logAuditEvent } from '@/lib/audit';
 import { logServerAction } from '@/lib/serverLogger';
+import { getConfiguredPasskey, normalizePasskey } from '@/lib/passkeys';
 
 const bodySchema = z.object({ passkey: z.string().min(1) });
 
 const DEFAULT_ADMIN_PASSKEY = 'admin-pass-456';
-
-function normalizePasskey(passkey: string) {
-  const trimmed = passkey.trim();
-  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
-    return trimmed.slice(1, -1).trim();
-  }
-  return trimmed;
-}
 
 export async function POST(req: Request) {
   logServerAction('auth.admin.login', 'start');
@@ -33,7 +26,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Invalid payload' }, { status: 400 });
   }
 
-  const configuredPasskey = normalizePasskey(process.env.ADMIN_PASSKEY || DEFAULT_ADMIN_PASSKEY);
+  const configuredPasskey = getConfiguredPasskey(process.env.ADMIN_PASSKEY, DEFAULT_ADMIN_PASSKEY);
   const success = normalizePasskey(parsed.data.passkey) === configuredPasskey;
   await recordLoginAttempt(ipHash, 'ADMIN', success);
 

@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { assertLoginAllowed, getClientIp, hashIp, recordLoginAttempt } from '@/lib/security';
 import { logAuditEvent } from '@/lib/audit';
 import { logServerAction } from '@/lib/serverLogger';
+import { getConfiguredPasskey, normalizePasskey } from '@/lib/passkeys';
 
 const bodySchema = z.object({ passkey: z.string().min(1) });
 
@@ -25,8 +26,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'Invalid payload' }, { status: 400 });
   }
 
-  const configuredPasskey = process.env.USER_PASSKEY?.trim() || DEFAULT_USER_PASSKEY;
-  const success = parsed.data.passkey.trim() === configuredPasskey;
+  const configuredPasskey = getConfiguredPasskey(process.env.USER_PASSKEY, DEFAULT_USER_PASSKEY);
+  const success = normalizePasskey(parsed.data.passkey) === configuredPasskey;
   await recordLoginAttempt(ipHash, 'USER', success);
 
   if (!success) {

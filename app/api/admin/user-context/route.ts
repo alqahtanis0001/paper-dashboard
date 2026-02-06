@@ -32,6 +32,7 @@ function parseLoginMetadata(metadata: unknown) {
   const root = asObject(metadata);
   const client = asObject(root?.client);
   const marketing = asObject(root?.marketing);
+  const deviceHints = asObject(marketing?.deviceHints);
   const campaign = asObject(marketing?.campaign);
   const clickIds = asObject(marketing?.clickIds);
   const connection = asObject(marketing?.connection);
@@ -65,6 +66,15 @@ function parseLoginMetadata(metadata: unknown) {
     locale: asString(marketing?.locale),
     clientTimezone: asString(marketing?.timezone),
     platform: asString(marketing?.platform),
+    deviceModel: asString(deviceHints?.model),
+    devicePlatform: asString(deviceHints?.platform),
+    devicePlatformVersion: asString(deviceHints?.platformVersion),
+    deviceArchitecture: asString(deviceHints?.architecture),
+    deviceBitness: asString(deviceHints?.bitness),
+    browserFullVersion: asString(deviceHints?.browserFullVersion),
+    browserBrands: asStringArray(deviceHints?.browserBrands),
+    deviceMemoryGb: asNumber(deviceHints?.deviceMemoryGb),
+    hardwareConcurrency: asNumber(deviceHints?.hardwareConcurrency),
     trafficChannel: asString(marketing?.trafficChannel),
     campaignLabel: asString(marketing?.campaignLabel),
     audienceSegment: asString(marketing?.audienceSegment),
@@ -193,6 +203,44 @@ function buildPlainSummary(input: {
   return `${input.trafficVolume}. Current audience is mostly ${input.topDevice} users coming through ${input.topChannel}${locationText}.`;
 }
 
+function normalizeToken(value: string | null | undefined) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function inferModelFromUserAgent(userAgent: string | null) {
+  if (!userAgent) return null;
+
+  const androidBuildModel = userAgent.match(/Android[^;)]*;\s*([^;)\]]+)\s+Build\//i)?.[1] ?? null;
+  const androidModel = normalizeToken(androidBuildModel);
+  if (androidModel && !/linux|wv|mobile safari/i.test(androidModel)) return androidModel;
+
+  const pixelModel = userAgent.match(/\bPixel\s+[0-9a-zA-Z ]{1,24}/i)?.[0] ?? null;
+  const normalizedPixel = normalizeToken(pixelModel);
+  if (normalizedPixel) return normalizedPixel;
+
+  if (/iPhone/i.test(userAgent)) return 'iPhone';
+  if (/iPad/i.test(userAgent)) return 'iPad';
+  if (/Macintosh|Mac OS X/i.test(userAgent)) return 'Mac';
+  if (/Windows NT/i.test(userAgent)) return 'Windows PC';
+
+  return null;
+}
+
+function buildDeviceName(input: ReturnType<typeof parseLoginMetadata>) {
+  const model = normalizeToken(input.deviceModel) ?? inferModelFromUserAgent(input.userAgent);
+  const platform = normalizeToken(input.devicePlatform) ?? normalizeToken(input.os);
+  if (model && platform) {
+    const modelLower = model.toLowerCase();
+    const platformLower = platform.toLowerCase();
+    return modelLower.includes(platformLower) ? model : `${model} (${platform})`;
+  }
+  if (model) return model;
+  if (input.device && input.os) return `${input.device} (${input.os})`;
+  return input.device ?? input.os ?? 'Unknown device';
+}
+
 export async function GET(req: NextRequest) {
   logServerAction('admin.userContext.get', 'start');
   try {
@@ -282,6 +330,7 @@ export async function GET(req: NextRequest) {
     browser: parsedLatest.browser,
     os: parsedLatest.os,
     device: parsedLatest.device,
+    deviceName: buildDeviceName(parsedLatest),
     userAgent: parsedLatest.userAgent,
     marketing: {
       landingPath: parsedLatest.landingPath,
@@ -292,6 +341,15 @@ export async function GET(req: NextRequest) {
       locale: parsedLatest.locale,
       clientTimezone: parsedLatest.clientTimezone,
       platform: parsedLatest.platform,
+      deviceModel: parsedLatest.deviceModel,
+      devicePlatform: parsedLatest.devicePlatform,
+      devicePlatformVersion: parsedLatest.devicePlatformVersion,
+      deviceArchitecture: parsedLatest.deviceArchitecture,
+      deviceBitness: parsedLatest.deviceBitness,
+      browserFullVersion: parsedLatest.browserFullVersion,
+      browserBrands: parsedLatest.browserBrands,
+      deviceMemoryGb: parsedLatest.deviceMemoryGb,
+      hardwareConcurrency: parsedLatest.hardwareConcurrency,
       trafficChannel: parsedLatest.trafficChannel,
       campaignLabel: parsedLatest.campaignLabel,
       audienceSegment: parsedLatest.audienceSegment,
@@ -340,6 +398,7 @@ export async function GET(req: NextRequest) {
   logServerAction('admin.userContext.get', 'success', {
     hasLoginAudit: !!latestUserLogin,
     hasSession: !!session,
+    deviceName: userContext.deviceName,
     city: userContext.city,
     country: userContext.country,
     trafficVolume: userContext.aggregates.trafficVolumeLabel,

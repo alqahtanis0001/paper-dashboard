@@ -96,6 +96,7 @@ type UserAccessContext = {
   browser: string | null;
   os: string | null;
   device: string | null;
+  deviceName: string;
   userAgent: string | null;
   marketing: {
     landingPath: string | null;
@@ -106,6 +107,15 @@ type UserAccessContext = {
     locale: string | null;
     clientTimezone: string | null;
     platform: string | null;
+    deviceModel: string | null;
+    devicePlatform: string | null;
+    devicePlatformVersion: string | null;
+    deviceArchitecture: string | null;
+    deviceBitness: string | null;
+    browserFullVersion: string | null;
+    browserBrands: string[];
+    deviceMemoryGb: number | null;
+    hardwareConcurrency: number | null;
     trafficChannel: string | null;
     campaignLabel: string | null;
     audienceSegment: string | null;
@@ -696,9 +706,11 @@ export default function AdminPage() {
               </div>
 
               <div style={styles.syncStatCard}>
-                <div style={styles.label}>Device + Browser</div>
-                <strong>{[userAccess.device, userAccess.browser].filter(Boolean).join(' · ') || '--'}</strong>
-                <span style={styles.mutedText}>{userAccess.os ?? '--'}</span>
+                <div style={styles.label}>Device Name</div>
+                <strong>{userAccess.deviceName || '--'}</strong>
+                <span style={styles.mutedText}>
+                  {[userAccess.device, userAccess.browser, userAccess.os].filter(Boolean).join(' • ') || 'No browser fingerprint'}
+                </span>
               </div>
 
               <div style={styles.syncStatCard}>
@@ -844,6 +856,14 @@ export default function AdminPage() {
               <div style={styles.mutedText}>
                 {[
                   userAccess.marketing.platform,
+                  userAccess.marketing.deviceModel ? `model ${userAccess.marketing.deviceModel}` : null,
+                  userAccess.marketing.devicePlatformVersion ? `platform ${userAccess.marketing.devicePlatformVersion}` : null,
+                  userAccess.marketing.deviceArchitecture ? `arch ${userAccess.marketing.deviceArchitecture}` : null,
+                  userAccess.marketing.deviceBitness ? `${userAccess.marketing.deviceBitness}-bit` : null,
+                  typeof userAccess.marketing.deviceMemoryGb === 'number' ? `${userAccess.marketing.deviceMemoryGb} GB memory hint` : null,
+                  typeof userAccess.marketing.hardwareConcurrency === 'number' ? `${userAccess.marketing.hardwareConcurrency} CPU threads` : null,
+                  userAccess.marketing.browserFullVersion ? `browser ${userAccess.marketing.browserFullVersion}` : null,
+                  userAccess.marketing.browserBrands.length ? userAccess.marketing.browserBrands.join(' | ') : null,
                   typeof userAccess.marketing.viewportWidth === 'number' && typeof userAccess.marketing.viewportHeight === 'number'
                     ? `viewport ${userAccess.marketing.viewportWidth}x${userAccess.marketing.viewportHeight}`
                     : null,

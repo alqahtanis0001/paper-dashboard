@@ -5,6 +5,7 @@
       "name": "Paper Dashboard: Dev",
       "type": "node-terminal",
       "request": "launch",
+      "preLaunchTask": "paper:prisma:sync",
       "command": "npm run dev",
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env.local",

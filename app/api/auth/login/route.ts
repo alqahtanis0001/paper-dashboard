@@ -6,6 +6,7 @@ import { logAuditEvent } from '@/lib/audit';
 import { logServerAction } from '@/lib/serverLogger';
 import { verifyRolePasskey } from '@/lib/passkeys';
 import { collectClientContext } from '@/lib/clientContext';
+import { isDatabaseConnectivityError } from '@/lib/dbErrors';
 
 const campaignSchema = z.object({
   utmSource: z.string().max(120).nullable().optional(),
@@ -176,150 +177,158 @@ function audienceSegmentLabel(input: {
 
 export async function POST(req: Request) {
   logServerAction('auth.user.login', 'start');
-  const ipHash = hashIp(getClientIp(req.headers));
-  const gate = await assertLoginAllowed(ipHash, 'USER');
-  if (!gate.allowed) {
-    logServerAction('auth.user.login', 'warn', { reason: 'rate_limited', retryAfterSec: gate.retryAfterSec });
-    return NextResponse.json({ error: 'Too many attempts', retryAfterSec: gate.retryAfterSec }, { status: 429 });
-  }
+  try {
+    const ipHash = hashIp(getClientIp(req.headers));
+    const gate = await assertLoginAllowed(ipHash, 'USER');
+    if (!gate.allowed) {
+      logServerAction('auth.user.login', 'warn', { reason: 'rate_limited', retryAfterSec: gate.retryAfterSec });
+      return NextResponse.json({ error: 'Too many attempts', retryAfterSec: gate.retryAfterSec }, { status: 429 });
+    }
 
-  const json = await req.json().catch(() => null);
-  const parsed = bodySchema.safeParse(json);
-  if (!parsed.success) {
-    logServerAction('auth.user.login', 'warn', { reason: 'invalid_payload' });
-    return NextResponse.json({ error: 'Invalid payload' }, { status: 400 });
-  }
+    const json = await req.json().catch(() => null);
+    const parsed = bodySchema.safeParse(json);
+    if (!parsed.success) {
+      logServerAction('auth.user.login', 'warn', { reason: 'invalid_payload' });
+      return NextResponse.json({ error: 'Invalid payload' }, { status: 400 });
+    }
 
-  const passkeyCheck = verifyRolePasskey('USER', parsed.data.passkey);
-  if (passkeyCheck.reason === 'not_configured') {
-    await logAuditEvent('login_failed', 'USER', { ipHash, roleAttempted: 'USER', reason: 'passkey_not_configured' });
-    logServerAction('auth.user.login', 'error', { reason: 'passkey_not_configured' });
-    return NextResponse.json({ error: 'Authentication unavailable' }, { status: 503 });
-  }
+    const passkeyCheck = verifyRolePasskey('USER', parsed.data.passkey);
+    if (passkeyCheck.reason === 'not_configured') {
+      await logAuditEvent('login_failed', 'USER', { ipHash, roleAttempted: 'USER', reason: 'passkey_not_configured' });
+      logServerAction('auth.user.login', 'error', { reason: 'passkey_not_configured' });
+      return NextResponse.json({ error: 'Authentication unavailable' }, { status: 503 });
+    }
 
-  const success = passkeyCheck.ok;
-  await recordLoginAttempt(ipHash, 'USER', success);
+    const success = passkeyCheck.ok;
+    await recordLoginAttempt(ipHash, 'USER', success);
 
-  if (!success) {
-    await logAuditEvent('login_failed', 'USER', { ipHash, roleAttempted: 'USER' });
-    logServerAction('auth.user.login', 'warn', { reason: 'unauthorized' });
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+    if (!success) {
+      await logAuditEvent('login_failed', 'USER', { ipHash, roleAttempted: 'USER' });
+      logServerAction('auth.user.login', 'warn', { reason: 'unauthorized' });
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
 
-  const clientContext = await collectClientContext(req.headers);
-  const clientPayload = parsed.data.client;
-  const campaign = clientPayload?.campaign;
-  const referrer = cleanText(clientPayload?.referrer ?? null);
-  const referrerHost = getReferrerHost(referrer);
-  const utmSource = cleanText(campaign?.utmSource);
-  const utmMedium = cleanText(campaign?.utmMedium);
-  const utmCampaign = cleanText(campaign?.utmCampaign);
-  const utmTerm = cleanText(campaign?.utmTerm);
-  const utmContent = cleanText(campaign?.utmContent);
-  const gclid = cleanText(campaign?.gclid);
-  const fbclid = cleanText(campaign?.fbclid);
-  const ttclid = cleanText(campaign?.ttclid);
-  const msclkid = cleanText(campaign?.msclkid);
-  const timezone = cleanText(clientPayload?.timezone) ?? clientContext.timezone;
-  const localHour = getLocalHour(timezone);
-  const partOfDay = partOfDayLabel(localHour);
-  const trafficChannel = classifyTrafficChannel({
-    utmMedium,
-    utmSource,
-    referrerHost,
-    hasSearchClickId: !!(gclid || msclkid),
-    hasSocialClickId: !!(fbclid || ttclid),
-  });
-  const campaignLabel = buildCampaignLabel({ utmSource, utmMedium, utmCampaign });
-  const audienceSegment = audienceSegmentLabel({
-    device: clientContext.device,
-    trafficChannel,
-    partOfDay,
-  });
-
-  const { sessionId, expiresAt } = await createSession('USER');
-  const res = NextResponse.json({ ok: true });
-  attachSessionCookie(res, sessionId, expiresAt);
-  await logAuditEvent('login_success', 'USER', {
-    sessionId,
-    ipHash: clientContext.ipHash,
-    ip: clientContext.ip,
-    client: {
-      userAgent: clientContext.userAgent,
-      browser: clientContext.browser,
-      os: clientContext.os,
-      device: clientContext.device,
-      city: clientContext.city,
-      region: clientContext.region,
-      country: clientContext.country,
-      countryCode: clientContext.countryCode,
-      timezone: clientContext.timezone,
-      org: clientContext.org,
-      postal: clientContext.postal,
-      latitude: clientContext.latitude,
-      longitude: clientContext.longitude,
-      locationSource: clientContext.locationSource,
-      privateIp: clientContext.privateIp,
-    },
-    marketing: {
-      landingPath: cleanText(clientPayload?.landingPath),
-      referrer,
+    const clientContext = await collectClientContext(req.headers);
+    const clientPayload = parsed.data.client;
+    const campaign = clientPayload?.campaign;
+    const referrer = cleanText(clientPayload?.referrer ?? null);
+    const referrerHost = getReferrerHost(referrer);
+    const utmSource = cleanText(campaign?.utmSource);
+    const utmMedium = cleanText(campaign?.utmMedium);
+    const utmCampaign = cleanText(campaign?.utmCampaign);
+    const utmTerm = cleanText(campaign?.utmTerm);
+    const utmContent = cleanText(campaign?.utmContent);
+    const gclid = cleanText(campaign?.gclid);
+    const fbclid = cleanText(campaign?.fbclid);
+    const ttclid = cleanText(campaign?.ttclid);
+    const msclkid = cleanText(campaign?.msclkid);
+    const timezone = cleanText(clientPayload?.timezone) ?? clientContext.timezone;
+    const localHour = getLocalHour(timezone);
+    const partOfDay = partOfDayLabel(localHour);
+    const trafficChannel = classifyTrafficChannel({
+      utmMedium,
+      utmSource,
       referrerHost,
-      language: cleanText(clientPayload?.language),
-      languages: clientPayload?.languages ?? [],
-      locale: cleanText(clientPayload?.locale),
-      timezone,
-      platform: cleanText(clientPayload?.platform),
-      deviceHints: {
-        model: cleanText(clientPayload?.deviceModel),
-        platform: cleanText(clientPayload?.devicePlatform),
-        platformVersion: cleanText(clientPayload?.devicePlatformVersion),
-        architecture: cleanText(clientPayload?.deviceArchitecture),
-        bitness: cleanText(clientPayload?.deviceBitness),
-        browserFullVersion: cleanText(clientPayload?.browserFullVersion),
-        browserBrands: clientPayload?.browserBrands ?? [],
-        deviceMemoryGb: clientPayload?.deviceMemoryGb ?? null,
-        hardwareConcurrency: clientPayload?.hardwareConcurrency ?? null,
-      },
-      viewport: {
-        width: clientPayload?.viewportWidth ?? null,
-        height: clientPayload?.viewportHeight ?? null,
-      },
-      screen: {
-        width: clientPayload?.screenWidth ?? null,
-        height: clientPayload?.screenHeight ?? null,
-        colorDepth: clientPayload?.colorDepth ?? null,
-      },
-      campaign: {
-        utmSource,
-        utmMedium,
-        utmCampaign,
-        utmTerm,
-        utmContent,
-      },
-      clickIds: {
-        gclid,
-        fbclid,
-        ttclid,
-        msclkid,
-      },
-      connection: {
-        effectiveType: cleanText(clientPayload?.connection?.effectiveType),
-        downlinkMbps: clientPayload?.connection?.downlinkMbps ?? null,
-        rttMs: clientPayload?.connection?.rttMs ?? null,
-        saveData: clientPayload?.connection?.saveData ?? null,
-      },
+      hasSearchClickId: !!(gclid || msclkid),
+      hasSocialClickId: !!(fbclid || ttclid),
+    });
+    const campaignLabel = buildCampaignLabel({ utmSource, utmMedium, utmCampaign });
+    const audienceSegment = audienceSegmentLabel({
+      device: clientContext.device,
       trafficChannel,
-      campaignLabel,
-      audienceSegment,
-      localHour,
       partOfDay,
-    },
-  });
-  logServerAction('auth.user.login', 'success', {
-    sessionId,
-    passkeySource: passkeyCheck.source ?? 'unknown',
-    usedFallbackPasskey: passkeyCheck.usedFallback,
-  });
-  return res;
+    });
+
+    const { sessionId, expiresAt } = await createSession('USER');
+    const res = NextResponse.json({ ok: true });
+    attachSessionCookie(res, sessionId, expiresAt);
+    await logAuditEvent('login_success', 'USER', {
+      sessionId,
+      ipHash: clientContext.ipHash,
+      ip: clientContext.ip,
+      client: {
+        userAgent: clientContext.userAgent,
+        browser: clientContext.browser,
+        os: clientContext.os,
+        device: clientContext.device,
+        city: clientContext.city,
+        region: clientContext.region,
+        country: clientContext.country,
+        countryCode: clientContext.countryCode,
+        timezone: clientContext.timezone,
+        org: clientContext.org,
+        postal: clientContext.postal,
+        latitude: clientContext.latitude,
+        longitude: clientContext.longitude,
+        locationSource: clientContext.locationSource,
+        privateIp: clientContext.privateIp,
+      },
+      marketing: {
+        landingPath: cleanText(clientPayload?.landingPath),
+        referrer,
+        referrerHost,
+        language: cleanText(clientPayload?.language),
+        languages: clientPayload?.languages ?? [],
+        locale: cleanText(clientPayload?.locale),
+        timezone,
+        platform: cleanText(clientPayload?.platform),
+        deviceHints: {
+          model: cleanText(clientPayload?.deviceModel),
+          platform: cleanText(clientPayload?.devicePlatform),
+          platformVersion: cleanText(clientPayload?.devicePlatformVersion),
+          architecture: cleanText(clientPayload?.deviceArchitecture),
+          bitness: cleanText(clientPayload?.deviceBitness),
+          browserFullVersion: cleanText(clientPayload?.browserFullVersion),
+          browserBrands: clientPayload?.browserBrands ?? [],
+          deviceMemoryGb: clientPayload?.deviceMemoryGb ?? null,
+          hardwareConcurrency: clientPayload?.hardwareConcurrency ?? null,
+        },
+        viewport: {
+          width: clientPayload?.viewportWidth ?? null,
+          height: clientPayload?.viewportHeight ?? null,
+        },
+        screen: {
+          width: clientPayload?.screenWidth ?? null,
+          height: clientPayload?.screenHeight ?? null,
+          colorDepth: clientPayload?.colorDepth ?? null,
+        },
+        campaign: {
+          utmSource,
+          utmMedium,
+          utmCampaign,
+          utmTerm,
+          utmContent,
+        },
+        clickIds: {
+          gclid,
+          fbclid,
+          ttclid,
+          msclkid,
+        },
+        connection: {
+          effectiveType: cleanText(clientPayload?.connection?.effectiveType),
+          downlinkMbps: clientPayload?.connection?.downlinkMbps ?? null,
+          rttMs: clientPayload?.connection?.rttMs ?? null,
+          saveData: clientPayload?.connection?.saveData ?? null,
+        },
+        trafficChannel,
+        campaignLabel,
+        audienceSegment,
+        localHour,
+        partOfDay,
+      },
+    });
+    logServerAction('auth.user.login', 'success', {
+      sessionId,
+      passkeySource: passkeyCheck.source ?? 'unknown',
+      usedFallbackPasskey: passkeyCheck.usedFallback,
+    });
+    return res;
+  } catch (error) {
+    if (isDatabaseConnectivityError(error)) {
+      logServerAction('auth.user.login', 'error', { reason: 'database_unavailable' });
+      return NextResponse.json({ error: 'Database unavailable. Start Postgres and retry.' }, { status: 503 });
+    }
+    throw error;
+  }
 }

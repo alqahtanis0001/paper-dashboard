@@ -1,4 +1,5 @@
 import { getClientIp, hashIp } from './security';
+import { runtimeEnv } from './runtimeEnv';
 
 type GeoSource = 'headers' | 'ipapi' | 'none';
 
@@ -35,7 +36,12 @@ type GeoInfo = {
   source: Exclude<GeoSource, 'none'>;
 };
 
-const GEO_LOOKUP_TIMEOUT_MS = Number.parseInt(process.env.GEO_LOOKUP_TIMEOUT_MS ?? '1500', 10);
+const DEFAULT_GEO_LOOKUP_TIMEOUT_MS = runtimeEnv.isRender ? 1500 : 450;
+const GEO_LOOKUP_TIMEOUT_MS = Number.parseInt(
+  process.env.GEO_LOOKUP_TIMEOUT_MS ?? String(DEFAULT_GEO_LOOKUP_TIMEOUT_MS),
+  10
+);
+const ALLOW_LOCAL_GEO_LOOKUP = process.env.ALLOW_LOCAL_GEO_LOOKUP === '1';
 
 function pickHeader(headers: Headers, candidates: string[]) {
   for (const key of candidates) {
@@ -206,7 +212,8 @@ export async function collectClientContext(headers: Headers): Promise<ClientCont
 
   const privateIp = isPrivateIp(ip);
   const headerGeo = geoFromHeaders(headers);
-  const lookupGeo = !headerGeo && !privateIp ? await geoFromIpApi(ip) : null;
+  const shouldLookupGeo = runtimeEnv.isRender || ALLOW_LOCAL_GEO_LOOKUP;
+  const lookupGeo = !headerGeo && !privateIp && shouldLookupGeo ? await geoFromIpApi(ip) : null;
   const geo = headerGeo ?? lookupGeo;
 
   return {

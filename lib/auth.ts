@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { prisma } from './prisma';
 import { Role } from '@prisma/client';
+import { runtimeEnv } from './runtimeEnv';
 
 const SESSION_COOKIE = 'session_id';
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24; // 24h
@@ -38,7 +39,7 @@ export async function createSession(role: Role) {
 export function attachSessionCookie(res: NextResponse, sessionId: string, expiresAt: Date) {
   res.cookies.set(SESSION_COOKIE, sessionId, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: runtimeEnv.secureCookies,
     sameSite: 'lax',
     path: '/',
     expires: expiresAt,

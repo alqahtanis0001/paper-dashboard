@@ -15,6 +15,7 @@ import {
   normalizeGraphTimeframe,
   timeframeToMs,
 } from './graphModes';
+import { runtimeEnv } from '../runtimeEnv';
 
 type Candle = {
   time: number; // unix ms
@@ -922,7 +923,7 @@ class DealEngineDisabled {
   }
 }
 
-const shouldRunEngine = !!process.env.DATABASE_URL;
+const shouldRunEngine = runtimeEnv.hasDatabase;
 const globalEngine = globalThis as unknown as { dealEngine?: DealEngine | DealEngineDisabled };
 export const dealEngine = globalEngine.dealEngine ?? (shouldRunEngine ? new DealEngine() : new DealEngineDisabled());
 if (!globalEngine.dealEngine) globalEngine.dealEngine = dealEngine;

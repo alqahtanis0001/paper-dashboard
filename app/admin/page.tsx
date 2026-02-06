@@ -167,6 +167,31 @@ type UserAccessContext = {
   };
 };
 
+type RuntimeDiagnostics = {
+  runtimeTarget: 'render' | 'local' | 'other';
+  nodeEnv: string;
+  isRender: boolean;
+  isLocal: boolean;
+  storageMode:
+    | 'render-internal-postgres'
+    | 'render-external-postgres'
+    | 'local-postgres'
+    | 'external-postgres'
+    | 'unconfigured';
+  hasDatabase: boolean;
+  databaseHost: string | null;
+  databaseSslMode: string | null;
+  databaseSource:
+    | 'database_url'
+    | 'render_internal_database_url'
+    | 'internal_database_url'
+    | 'local_database_url'
+    | 'none';
+  databaseUrlAdapted: boolean;
+  secureCookies: boolean;
+  notes: string[];
+};
+
 const CHAIN_PRESETS: Record<string, { chainName: string; basePrice: number }> = {
   'BTC/USDT': { chainName: 'Bitcoin', basePrice: 62000 },
   'ETH/USDT': { chainName: 'Ethereum', basePrice: 3200 },
@@ -239,6 +264,8 @@ export default function AdminPage() {
   const [controlSymbol, setControlSymbol] = useState<GraphMode>('AUTO');
   const [controlTimeframe, setControlTimeframe] = useState<GraphTimeframe>('1s');
   const [syncingControl, setSyncingControl] = useState(false);
+  const [runtimeInfo, setRuntimeInfo] = useState<RuntimeDiagnostics | null>(null);
+  const [loadingRuntimeInfo, setLoadingRuntimeInfo] = useState(false);
   const [userAccess, setUserAccess] = useState<UserAccessContext | null>(null);
   const [loadingUserAccess, setLoadingUserAccess] = useState(false);
 
@@ -317,10 +344,27 @@ export default function AdminPage() {
     setUserAccess(body.userContext ?? null);
   }, []);
 
+  const loadRuntimeInfo = useCallback(async () => {
+    setLoadingRuntimeInfo(true);
+    const res = await fetch('/api/admin/runtime', { cache: 'no-store' });
+    setLoadingRuntimeInfo(false);
+    if (res.status === 401) {
+      setAuthed(false);
+      setError('Admin session expired. Please log in again.');
+      return;
+    }
+    if (!res.ok) {
+      setError('Failed to load runtime diagnostics.');
+      return;
+    }
+    const body = (await res.json()) as { runtime?: RuntimeDiagnostics };
+    setRuntimeInfo(body.runtime ?? null);
+  }, []);
+
   const refreshAll = useCallback(async () => {
     setError('');
-    await Promise.all([loadDeals(), loadWithdrawals(), loadControlState(), loadUserAccess()]);
-  }, [loadDeals, loadWithdrawals, loadControlState, loadUserAccess]);
+    await Promise.all([loadDeals(), loadWithdrawals(), loadControlState(), loadUserAccess(), loadRuntimeInfo()]);
+  }, [loadDeals, loadWithdrawals, loadControlState, loadUserAccess, loadRuntimeInfo]);
 
   useEffect(() => {
     if (!authed || !autoRefresh) return;
@@ -671,6 +715,57 @@ export default function AdminPage() {
           {error || info}
         </div>
       )}
+
+      <div className="glass" style={styles.panel}>
+        <div style={styles.subHeaderRow}>
+          <h2 style={styles.sectionTitle}>Runtime & Storage Profile</h2>
+          <button type="button" onClick={() => void loadRuntimeInfo()} style={styles.quickBtn}>
+            Reload Runtime
+          </button>
+        </div>
+
+        {loadingRuntimeInfo && <div style={{ ...styles.mutedText, marginTop: 10 }}>Loading runtime diagnostics...</div>}
+
+        {!loadingRuntimeInfo && runtimeInfo && (
+          <div style={styles.userInfoGrid}>
+            <div style={styles.syncStatCard}>
+              <div style={styles.label}>Runtime Target</div>
+              <strong>{runtimeInfo.runtimeTarget}</strong>
+              <span style={styles.mutedText}>NODE_ENV={runtimeInfo.nodeEnv}</span>
+            </div>
+            <div style={styles.syncStatCard}>
+              <div style={styles.label}>Storage Mode</div>
+              <strong>{runtimeInfo.storageMode}</strong>
+              <span style={styles.mutedText}>
+                Host: {runtimeInfo.databaseHost ?? '--'} • source: {runtimeInfo.databaseSource}
+              </span>
+            </div>
+            <div style={styles.syncStatCard}>
+              <div style={styles.label}>Database Status</div>
+              <strong>{runtimeInfo.hasDatabase ? 'Configured' : 'Not configured'}</strong>
+              <span style={styles.mutedText}>
+                sslmode={runtimeInfo.databaseSslMode ?? '--'} • adapted={runtimeInfo.databaseUrlAdapted ? 'yes' : 'no'}
+              </span>
+            </div>
+            <div style={styles.syncStatCard}>
+              <div style={styles.label}>Session Cookie Security</div>
+              <strong>{runtimeInfo.secureCookies ? 'Secure cookie enabled' : 'Secure cookie disabled'}</strong>
+              <span style={styles.mutedText}>
+                {runtimeInfo.isRender ? 'Render profile' : runtimeInfo.isLocal ? 'Local profile' : 'Generic profile'}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {!loadingRuntimeInfo && runtimeInfo?.notes?.length ? (
+          <div style={styles.userInfoFooter}>
+            <div style={{ ...styles.mutedText, marginBottom: 4 }}>Runtime Notes</div>
+            {runtimeInfo.notes.map((note) => (
+              <div key={note} style={styles.mutedText}>{note}</div>
+            ))}
+          </div>
+        ) : null}
+      </div>
 
       <div className="glass" style={styles.panel}>
         <div style={styles.subHeaderRow}>

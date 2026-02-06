@@ -1,9 +1,12 @@
 import { createHash } from 'crypto';
 import { prisma } from './prisma';
 import { LoginAttemptRole } from '@prisma/client';
+import { runtimeEnv } from './runtimeEnv';
 
-const LOCKOUT_THRESHOLD = Number.parseInt(process.env.LOGIN_LOCKOUT_THRESHOLD ?? '10', 10);
-const LOCKOUT_WINDOW_MS = Number.parseInt(process.env.LOGIN_LOCKOUT_WINDOW_MS ?? String(5 * 60 * 1000), 10);
+const DEFAULT_LOCKOUT_THRESHOLD = runtimeEnv.isLocal ? 50 : 10;
+const DEFAULT_LOCKOUT_WINDOW_MS = runtimeEnv.isLocal ? 60 * 1000 : 5 * 60 * 1000;
+const LOCKOUT_THRESHOLD = Number.parseInt(process.env.LOGIN_LOCKOUT_THRESHOLD ?? String(DEFAULT_LOCKOUT_THRESHOLD), 10);
+const LOCKOUT_WINDOW_MS = Number.parseInt(process.env.LOGIN_LOCKOUT_WINDOW_MS ?? String(DEFAULT_LOCKOUT_WINDOW_MS), 10);
 
 function getWindowStart() {
   return new Date(Date.now() - LOCKOUT_WINDOW_MS);

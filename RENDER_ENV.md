@@ -12,3 +12,7 @@ Set these in Render → Environment Variables (copy/paste values exactly, or rot
 Build/Start commands on Render:
 - Build: `npm install && npx prisma generate && npx prisma migrate deploy && npm run build`
 - Start: `npm run start -- -p $PORT`
+
+If a prior deploy attempt left Prisma in a failed migration state (`P3009`), run this once in a Render shell (same `DATABASE_URL`):
+
+- `npx prisma migrate resolve --rolled-back 20260205160000_full_upgrade`

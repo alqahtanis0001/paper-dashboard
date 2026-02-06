@@ -78,6 +78,35 @@ type ControlState = {
   };
 };
 
+type UserAccessContext = {
+  lastLoginAt: string | null;
+  ip: string | null;
+  ipHash: string | null;
+  city: string | null;
+  region: string | null;
+  country: string | null;
+  countryCode: string | null;
+  timezone: string | null;
+  org: string | null;
+  postal: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  locationSource: string | null;
+  privateIp: boolean | null;
+  browser: string | null;
+  os: string | null;
+  device: string | null;
+  userAgent: string | null;
+  session: {
+    id: string;
+    createdAt: string;
+    lastSeenAt: string;
+    expiresAt: string;
+    revokedAt: string | null;
+    isActive: boolean;
+  } | null;
+};
+
 const CHAIN_PRESETS: Record<string, { chainName: string; basePrice: number }> = {
   'BTC/USDT': { chainName: 'Bitcoin', basePrice: 62000 },
   'ETH/USDT': { chainName: 'Ethereum', basePrice: 3200 },
@@ -112,6 +141,7 @@ const formatMoney = (amount: number) =>
   });
 const KEEP_ALIVE_PING_INTERVAL_MS = 6 * 60 * 1000;
 const formatClock = (value: number | null | undefined) => (typeof value === 'number' ? dayjs(value).format('HH:mm:ss') : '--');
+const formatDateTime = (value: string | null | undefined) => (value ? dayjs(value).format('MMM D, YYYY HH:mm:ss') : '--');
 const metaActionColor = (action: 'BUY' | 'SELL' | 'NO_TRADE' | undefined) =>
   action === 'BUY' ? '#5df3a6' : action === 'SELL' ? '#ff5c8d' : '#ffd166';
 
@@ -147,6 +177,8 @@ export default function AdminPage() {
   const [controlSymbol, setControlSymbol] = useState<GraphMode>('AUTO');
   const [controlTimeframe, setControlTimeframe] = useState<GraphTimeframe>('1s');
   const [syncingControl, setSyncingControl] = useState(false);
+  const [userAccess, setUserAccess] = useState<UserAccessContext | null>(null);
+  const [loadingUserAccess, setLoadingUserAccess] = useState(false);
 
   const [form, setForm] = useState<DealFormState>(defaultForm());
   const [jumps, setJumps] = useState<JumpDraft[]>([{ riseDelaySec: 30, riseMagnitudePct: 12, holdSec: 8 }]);
@@ -206,10 +238,27 @@ export default function AdminPage() {
     if (body.controlState) applyControlState(body.controlState);
   }, [applyControlState]);
 
+  const loadUserAccess = useCallback(async () => {
+    setLoadingUserAccess(true);
+    const res = await fetch('/api/admin/user-context', { cache: 'no-store' });
+    setLoadingUserAccess(false);
+    if (res.status === 401) {
+      setAuthed(false);
+      setError('Admin session expired. Please log in again.');
+      return;
+    }
+    if (!res.ok) {
+      setError('Failed to load user access details.');
+      return;
+    }
+    const body = (await res.json()) as { userContext?: UserAccessContext };
+    setUserAccess(body.userContext ?? null);
+  }, []);
+
   const refreshAll = useCallback(async () => {
     setError('');
-    await Promise.all([loadDeals(), loadWithdrawals(), loadControlState()]);
-  }, [loadDeals, loadWithdrawals, loadControlState]);
+    await Promise.all([loadDeals(), loadWithdrawals(), loadControlState(), loadUserAccess()]);
+  }, [loadDeals, loadWithdrawals, loadControlState, loadUserAccess]);
 
   useEffect(() => {
     if (!authed || !autoRefresh) return;
@@ -492,6 +541,9 @@ export default function AdminPage() {
     };
   }, [deals]);
 
+  const userLocationLabel = [userAccess?.city, userAccess?.region, userAccess?.country].filter(Boolean).join(', ') || 'Unknown';
+  const userSessionState = userAccess?.session?.isActive ? 'Active session' : 'No active session';
+
   if (!authed) {
     return (
       <div style={styles.pageCenter}>
@@ -545,6 +597,81 @@ export default function AdminPage() {
           {error || info}
         </div>
       )}
+
+      <div className="glass" style={styles.panel}>
+        <div style={styles.subHeaderRow}>
+          <h2 style={styles.sectionTitle}>User Access Snapshot</h2>
+          <button type="button" onClick={() => void loadUserAccess()} style={styles.quickBtn}>
+            Reload Snapshot
+          </button>
+        </div>
+
+        {loadingUserAccess && <div style={{ ...styles.mutedText, marginTop: 10 }}>Loading user access details...</div>}
+
+        {!loadingUserAccess && !userAccess && <div style={{ ...styles.mutedText, marginTop: 10 }}>No user login data captured yet.</div>}
+
+        {!loadingUserAccess && userAccess && (
+          <>
+            <div style={styles.userInfoGrid}>
+              <div style={styles.syncStatCard}>
+                <div style={styles.label}>Last User Login</div>
+                <strong>{formatDateTime(userAccess.lastLoginAt)}</strong>
+                <span style={styles.mutedText}>{userSessionState}</span>
+              </div>
+
+              <div style={styles.syncStatCard}>
+                <div style={styles.label}>User City / Region</div>
+                <strong>{userAccess.city ?? '--'}</strong>
+                <span style={styles.mutedText}>{userLocationLabel}</span>
+              </div>
+
+              <div style={styles.syncStatCard}>
+                <div style={styles.label}>IP Address</div>
+                <strong style={styles.monoText}>{userAccess.ip ?? '--'}</strong>
+                <span style={styles.mutedText}>Hash: {userAccess.ipHash ?? '--'}</span>
+              </div>
+
+              <div style={styles.syncStatCard}>
+                <div style={styles.label}>Device + Browser</div>
+                <strong>{[userAccess.device, userAccess.browser].filter(Boolean).join(' · ') || '--'}</strong>
+                <span style={styles.mutedText}>{userAccess.os ?? '--'}</span>
+              </div>
+
+              <div style={styles.syncStatCard}>
+                <div style={styles.label}>Timezone / Network</div>
+                <strong>{userAccess.timezone ?? '--'}</strong>
+                <span style={styles.mutedText}>{userAccess.org ?? '--'}</span>
+              </div>
+
+              <div style={styles.syncStatCard}>
+                <div style={styles.label}>Geo Source</div>
+                <strong>{userAccess.locationSource ?? 'none'}</strong>
+                <span style={styles.mutedText}>
+                  Private IP: {userAccess.privateIp === null ? '--' : userAccess.privateIp ? 'yes' : 'no'}
+                </span>
+              </div>
+            </div>
+
+            <div style={styles.userInfoFooter}>
+              <div style={{ ...styles.mutedText, marginBottom: 4 }}>User Agent</div>
+              <div style={styles.monoText}>{userAccess.userAgent ?? '--'}</div>
+            </div>
+
+            <div style={styles.userInfoGrid}>
+              <div style={styles.syncStatCard}>
+                <div style={styles.label}>Session ID</div>
+                <strong style={styles.monoText}>{userAccess.session?.id ?? '--'}</strong>
+                <span style={styles.mutedText}>Created {formatDateTime(userAccess.session?.createdAt)}</span>
+              </div>
+              <div style={styles.syncStatCard}>
+                <div style={styles.label}>Last Seen / Expires</div>
+                <strong>{formatDateTime(userAccess.session?.lastSeenAt)}</strong>
+                <span style={styles.mutedText}>Expires {formatDateTime(userAccess.session?.expiresAt)}</span>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
 
       <div className="glass" style={styles.panel}>
         <div style={styles.subHeaderRow}>
@@ -906,6 +1033,19 @@ const styles: Record<string, CSSProperties> = {
     color: '#c7d6f6',
     background: '#13203a',
   },
+  userInfoGrid: {
+    marginTop: 10,
+    display: 'grid',
+    gap: 10,
+    gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))',
+  },
+  userInfoFooter: {
+    marginTop: 10,
+    border: '1px solid var(--border)',
+    borderRadius: 10,
+    padding: '0.75rem',
+    background: 'rgba(15,23,43,0.35)',
+  },
   notice: {
     borderRadius: 10,
     padding: '0.7rem 0.9rem',
@@ -1038,6 +1178,12 @@ const styles: Record<string, CSSProperties> = {
   disabledBtn: {
     opacity: 0.55,
     cursor: 'not-allowed',
+  },
+  monoText: {
+    fontFamily: 'ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace',
+    fontSize: 12,
+    color: '#c7d6f6',
+    wordBreak: 'break-all',
   },
   mutedText: { color: 'var(--muted)', fontSize: 13 },
   error: { color: '#ff5c8d', marginTop: 8, fontSize: 13 },

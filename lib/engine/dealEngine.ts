@@ -16,6 +16,8 @@ import {
   timeframeToMs,
 } from './graphModes';
 import { runtimeEnv } from '../runtimeEnv';
+import { getMarket, type MarketEvent, type MarketSpec, type RegimeOverride } from '@/lib/markets';
+import { getEngineConfig, setEngineConfig } from '@/lib/engine/engineConfig';
 
 type Candle = {
   time: number; // unix ms
@@ -72,6 +74,16 @@ type AiRuntimeSnapshot = {
 
 type EngineControlState = {
   symbol: string;
+  market: {
+    id: string;
+    label: string;
+    regimeOverride: RegimeOverride;
+    intensity: number;
+    activeRegime: MarketRegime | null;
+    trendDirection: number;
+    rules: { feeBps: number; minNotionalUsd: number; maxLeverage: number };
+    ai: MarketSpec['ai'];
+  };
   selectedGraphMode: GraphMode;
   timeframe: GraphTimeframe;
   activeDealId: string | null;
@@ -109,6 +121,12 @@ class DealEngine {
   private nextRegimeSwitch = 0;
   private lastTickAt = 0;
   private signalOutcomes: { id: string; time: number; price: number; action: 'BUY' | 'SELL' | 'NO_TRADE'; horizonSec: number }[] = [];
+  private market: MarketSpec = getMarket('BTC');
+  private regimeOverride: RegimeOverride = 'AUTO';
+  private intensity = 1.0;
+  private timeframeMs = 1000;
+  private lastCandleOpenTimeMs = 0;
+  private activeEvent: { event: MarketEvent; startedAt: number } | null = null;
 
   private selectedGraphMode: GraphMode = DEFAULT_GRAPH_MODE;
   private selectedTimeframe: GraphTimeframe = DEFAULT_GRAPH_TIMEFRAME;
@@ -126,9 +144,21 @@ class DealEngine {
   };
 
   constructor() {
+    this.resetSyntheticClock();
     this.reseedSyntheticMarket(false);
     this.startMarketTicks();
     this.startWatcher();
+    void getEngineConfig()
+      .then((cfg) => {
+        this.market = getMarket(cfg.activeMarketId);
+        this.regimeOverride = cfg.regimeOverride;
+        this.intensity = cfg.intensity;
+        this.price = this.market.price.basePrice;
+        this.resetSyntheticClock();
+        this.reseedSyntheticMarket(true, true);
+        this.emitControlState();
+      })
+      .catch(() => null);
   }
 
   private log(msg: string) {
@@ -137,6 +167,27 @@ class DealEngine {
 
   private static gaussianRandom() {
     return (Math.random() + Math.random() + Math.random() - 1.5) / 1.5;
+  }
+
+  private resetSyntheticClock() {
+    const now = Date.now();
+    this.lastCandleOpenTimeMs = now - (now % this.timeframeMs);
+  }
+
+  private nextCandleTime() {
+    this.lastCandleOpenTimeMs += this.timeframeMs;
+    return this.lastCandleOpenTimeMs;
+  }
+
+  private getEventMultiplier() {
+    if (!this.activeEvent) return 0;
+    const elapsed = (Date.now() - this.activeEvent.startedAt) / 1000;
+    const remain = Math.max(0, 1 - elapsed / Math.max(this.activeEvent.event.decaySec, 1));
+    if (remain <= 0) {
+      this.activeEvent = null;
+      return 0;
+    }
+    return (this.activeEvent.event.magnitudeBps / 10000) * remain;
   }
 
   private emitControlState() {
@@ -235,6 +286,61 @@ class DealEngine {
   }
 
   private pickRegime(prev?: RegimeState | null): RegimeState {
+    const base = this.market.price;
+    const k = this.intensity;
+
+    const makeRegime = (kind: MarketRegime, direction?: 1 | -1): RegimeState => {
+      if (kind === 'TRENDING') {
+        return {
+          kind,
+          driftBpsPerSec: randomBetween(base.driftBpsPerSec * 8, base.driftBpsPerSec * 26) * k,
+          noiseBps: randomBetween(base.noiseBps * 0.65, base.noiseBps * 1.25) * k,
+          wickBps: randomBetween(base.wickBps * 0.8, base.wickBps * 1.5) * k,
+          volumeBase: randomBetween(base.volumeBase * 0.9, base.volumeBase * 1.45) * k,
+          volumeJitter: randomBetween(base.volumeJitter * 0.75, base.volumeJitter * 1.3) * k,
+          meanRevert: Math.min(0.85, base.meanRevert * 0.85),
+          trendDirection: direction ?? (Math.random() < 0.5 ? -1 : 1),
+        };
+      }
+      if (kind === 'HIGH_VOL') {
+        return {
+          kind,
+          driftBpsPerSec: randomBetween(-base.driftBpsPerSec * 2.5, base.driftBpsPerSec * 2.5) * k,
+          noiseBps: randomBetween(base.noiseBps * 1.6, base.noiseBps * 3.2) * k,
+          wickBps: randomBetween(base.wickBps * 1.8, base.wickBps * 3.2) * k,
+          volumeBase: randomBetween(base.volumeBase * 1.15, base.volumeBase * 1.85) * k,
+          volumeJitter: randomBetween(base.volumeJitter * 1.2, base.volumeJitter * 2.2) * k,
+          meanRevert: Math.min(0.85, base.meanRevert * 1.25),
+        };
+      }
+      if (kind === 'CHOPPY') {
+        return {
+          kind,
+          driftBpsPerSec: randomBetween(-base.driftBpsPerSec * 3.2, base.driftBpsPerSec * 3.2) * k,
+          noiseBps: randomBetween(base.noiseBps * 0.9, base.noiseBps * 1.65) * k,
+          wickBps: randomBetween(base.wickBps * 0.85, base.wickBps * 1.45) * k,
+          volumeBase: randomBetween(base.volumeBase * 0.72, base.volumeBase * 1.2) * k,
+          volumeJitter: randomBetween(base.volumeJitter * 0.7, base.volumeJitter * 1.25) * k,
+          meanRevert: Math.min(0.9, base.meanRevert * 1.45),
+        };
+      }
+      return {
+        kind: 'LOW_VOL',
+        driftBpsPerSec: randomBetween(-base.driftBpsPerSec * 1.4, base.driftBpsPerSec * 1.4) * Math.max(0.35, k * 0.8),
+        noiseBps: randomBetween(base.noiseBps * 0.3, base.noiseBps * 0.7) * Math.max(0.35, k * 0.8),
+        wickBps: randomBetween(base.wickBps * 0.45, base.wickBps * 0.85) * Math.max(0.35, k * 0.8),
+        volumeBase: randomBetween(base.volumeBase * 0.45, base.volumeBase * 0.8),
+        volumeJitter: randomBetween(base.volumeJitter * 0.4, base.volumeJitter * 0.75),
+        meanRevert: Math.min(0.95, base.meanRevert * 1.7),
+      };
+    };
+
+    if (this.regimeOverride !== 'AUTO') {
+      if (this.regimeOverride === 'BULL') return makeRegime('TRENDING', 1);
+      if (this.regimeOverride === 'BEAR') return makeRegime('TRENDING', -1);
+      return makeRegime(this.regimeOverride);
+    }
+
     const pool: { kind: MarketRegime; weight: number }[] = [
       { kind: 'TRENDING', weight: 0.32 },
       { kind: 'CHOPPY', weight: 0.28 },
@@ -244,7 +350,6 @@ class DealEngine {
     const total = pool.reduce((sum, item) => sum + item.weight, 0);
     let roll = Math.random() * total;
     let chosen: MarketRegime = pool[0].kind;
-
     for (const item of pool) {
       roll -= item.weight;
       if (roll <= 0) {
@@ -258,58 +363,8 @@ class DealEngine {
       chosen = alternatives[Math.floor(Math.random() * alternatives.length)].kind;
     }
 
-    if (chosen === 'TRENDING') {
-      const direction =
-        prev?.kind === 'TRENDING' && prev.trendDirection && Math.random() < 0.58
-          ? prev.trendDirection
-          : Math.random() < 0.5
-            ? -1
-            : 1;
-      return {
-        kind: 'TRENDING',
-        driftBpsPerSec: randomBetween(2.3, 6.8),
-        noiseBps: randomBetween(6, 14),
-        wickBps: randomBetween(12, 26),
-        volumeBase: randomBetween(105, 190),
-        volumeJitter: randomBetween(42, 92),
-        meanRevert: 0.12,
-        trendDirection: direction,
-      };
-    }
-
-    if (chosen === 'HIGH_VOL') {
-      return {
-        kind: 'HIGH_VOL',
-        driftBpsPerSec: randomBetween(-0.7, 0.7),
-        noiseBps: randomBetween(18, 40),
-        wickBps: randomBetween(30, 72),
-        volumeBase: randomBetween(165, 270),
-        volumeJitter: randomBetween(76, 145),
-        meanRevert: 0.18,
-      };
-    }
-
-    if (chosen === 'CHOPPY') {
-      return {
-        kind: 'CHOPPY',
-        driftBpsPerSec: randomBetween(-0.45, 0.45),
-        noiseBps: randomBetween(8, 18),
-        wickBps: randomBetween(10, 20),
-        volumeBase: randomBetween(72, 140),
-        volumeJitter: randomBetween(30, 70),
-        meanRevert: 0.28,
-      };
-    }
-
-    return {
-      kind: 'LOW_VOL',
-      driftBpsPerSec: randomBetween(-0.25, 0.25),
-      noiseBps: randomBetween(2, 6),
-      wickBps: randomBetween(6, 12),
-      volumeBase: randomBetween(35, 80),
-      volumeJitter: randomBetween(14, 40),
-      meanRevert: 0.34,
-    };
+    const direction = prev?.kind === 'TRENDING' && prev.trendDirection && Math.random() < 0.58 ? prev.trendDirection : undefined;
+    return makeRegime(chosen, direction);
   }
 
   private scheduleRegime(now: number = Date.now()) {
@@ -324,22 +379,16 @@ class DealEngine {
     }
   }
 
-  private getBucketTime(now: number) {
-    const bucketMs = timeframeToMs(this.selectedTimeframe);
-    return Math.floor(now / bucketMs) * bucketMs;
-  }
-
   private computeSyntheticAnchor(now: number, profile: GraphProfile, runtime: ModeRuntimeState): number {
     const phase = (now / 1000 + runtime.phaseOffset) / profile.cycleSec;
     const macroWave = Math.sin(phase * Math.PI * 2) * (profile.waveBps / 10000);
     const microWave = Math.sin(phase * Math.PI * 2.8 + runtime.phaseOffset * 0.4) * (profile.microWaveBps / 10000);
     const longWave = Math.sin((now / 1000 + runtime.phaseOffset) / (profile.cycleSec * 6)) * ((profile.waveBps / 10000) * 0.35);
-    return profile.basePrice * (1 + macroWave + microWave + longWave);
+    return this.market.price.basePrice * (1 + macroWave + microWave + longWave);
   }
 
   private upsertCandle(now: number, price: number, regime: RegimeState, anchorPrice: number): Candle {
-    const bucketTime = this.getBucketTime(now);
-    const bucketMs = timeframeToMs(this.selectedTimeframe);
+    const bucketMs = this.timeframeMs;
     const bucketScale = Math.max(1, Math.sqrt(bucketMs / 1000));
 
     const wickSwing =
@@ -349,12 +398,19 @@ class DealEngine {
     const wickPrice = Math.max(anchorPrice * 0.08, price * (1 + wickSwing));
 
     const lastCandle = this.candles[this.candles.length - 1];
-    if (!lastCandle || lastCandle.time !== bucketTime) {
+    const currentBucket = Math.floor(now / bucketMs) * bucketMs;
+    const isSameBucket = Boolean(lastCandle && lastCandle.time === currentBucket);
+
+    if (!lastCandle || !isSameBucket) {
+      if (this.lastCandleOpenTimeMs === 0) this.resetSyntheticClock();
       const open = lastCandle?.close ?? price;
-      const initialVolume =
-        Math.max(3, regime.volumeBase * bucketScale * randomBetween(0.55, 1.35) + Math.random() * regime.volumeJitter * 0.45 * bucketScale);
+      const initialVolume = Math.max(
+        3,
+        regime.volumeBase * bucketScale * randomBetween(0.55, 1.35) + Math.random() * regime.volumeJitter * 0.45 * bucketScale,
+      );
+      const t = this.nextCandleTime();
       this.candles.push({
-        time: bucketTime,
+        time: t,
         open,
         high: Math.max(open, price, wickPrice),
         low: Math.max(0.0000001, Math.min(open, price, wickPrice)),
@@ -365,40 +421,36 @@ class DealEngine {
       lastCandle.high = Math.max(lastCandle.high, wickPrice, price);
       lastCandle.low = Math.max(0.0000001, Math.min(lastCandle.low, wickPrice, price));
       lastCandle.close = price;
-      const incrementalVolume =
-        (regime.volumeBase * 0.09 + Math.random() * (regime.volumeJitter * 0.35)) * (bucketScale / 2.4);
+      const incrementalVolume = (regime.volumeBase * 0.09 + Math.random() * (regime.volumeJitter * 0.35)) * (bucketScale / 2.4);
       lastCandle.volume += Math.max(0, incrementalVolume);
     }
 
-    if (this.candles.length > 3000) {
-      this.candles = this.candles.slice(-2500);
-    }
-
+    if (this.candles.length > 3000) this.candles = this.candles.slice(-2500);
     return this.candles[this.candles.length - 1];
   }
 
   private createSyntheticState(mode: NonAutoGraphMode, now: number): SyntheticModeState {
     const profile = GRAPH_MODE_PROFILES[mode];
     const runtime = this.modeRuntime[mode];
-    const bucketMs = timeframeToMs(this.selectedTimeframe);
+    const bucketMs = this.timeframeMs;
     const seedRegime = this.pickRegime(null);
     const nextRegimeSwitch = now + randomBetween(12000, 24000);
 
     const seedCount = 250;
     const seeded: Candle[] = [];
-    let workingPrice = profile.basePrice * randomBetween(0.94, 1.06);
+    let workingPrice = this.market.price.basePrice * randomBetween(0.94, 1.06);
     let prevClose = workingPrice;
 
     for (let i = seedCount - 1; i >= 0; i -= 1) {
       const ts = now - i * bucketMs;
       const anchor = this.computeSyntheticAnchor(ts, profile, runtime);
       const drift =
-        profile.basePrice *
+        this.market.price.basePrice *
         ((profile.trendBpsPerSec * runtime.driftTilt) / 10000) *
         (0.4 + Math.sin((ts / 1000 + runtime.phaseOffset) / (profile.cycleSec * 4)) * 0.6);
       const pull = (anchor - workingPrice) * profile.meanRevert * 0.55;
-      const noise = profile.basePrice * ((profile.noiseBps * runtime.noiseTilt) / 10000) * DealEngine.gaussianRandom() * 0.55;
-      workingPrice = Math.max(profile.basePrice * 0.08, workingPrice + drift + pull + noise);
+      const noise = this.market.price.basePrice * ((profile.noiseBps * runtime.noiseTilt) / 10000) * DealEngine.gaussianRandom() * 0.55;
+      workingPrice = Math.max(this.market.price.basePrice * 0.08, workingPrice + drift + pull + noise);
 
       const wickRange = workingPrice * ((profile.wickBps * runtime.noiseTilt) / 10000) * randomBetween(0.5, 1.8);
       const high = Math.max(prevClose, workingPrice) + wickRange * randomBetween(0.12, 0.9);
@@ -421,7 +473,7 @@ class DealEngine {
     }
 
     return {
-      price: seeded[seeded.length - 1]?.close ?? profile.basePrice,
+      price: seeded[seeded.length - 1]?.close ?? this.market.price.basePrice,
       startTime: now,
       candles: seeded,
       regime: seedRegime,
@@ -530,7 +582,11 @@ class DealEngine {
     const unclampedPrice = prevPrice + pullTerm + driftTerm + noiseTerm;
     const maxJump = Math.max(prevPrice * 0.25, anchorPrice * 0.1);
     const boundedPrice = Math.min(Math.max(unclampedPrice, prevPrice - maxJump), prevPrice + maxJump);
-    const price = Math.max(anchorPrice * 0.2, boundedPrice);
+    const eventTerm = prevPrice * this.getEventMultiplier();
+    const rawPrice = boundedPrice + eventTerm;
+    const minPrice = this.market.price.minPrice ?? anchorPrice * 0.2;
+    const maxPrice = this.market.price.maxPrice ?? Number.POSITIVE_INFINITY;
+    const price = Math.min(maxPrice, Math.max(minPrice, rawPrice));
 
     const candle = this.upsertCandle(now, price, regime, anchorPrice);
     this.price = price;
@@ -554,7 +610,7 @@ class DealEngine {
     const regime = this.regime ?? this.pickRegime();
 
     const anchorPrice = this.computeSyntheticAnchor(now, profile, runtime);
-    const prevPrice = this.price || profile.basePrice;
+    const prevPrice = this.price || this.market.price.basePrice;
     const dtSec = Math.max((now - (this.lastTickAt || now)) / 1000, 0.05);
     this.lastTickAt = now;
 
@@ -563,14 +619,14 @@ class DealEngine {
     const regimeDrift = regime.driftBpsPerSec * 0.65 * driftDirection;
     const longSwing = Math.sin((now / 1000 + runtime.phaseOffset) / (profile.cycleSec * 4));
     const driftTerm =
-      profile.basePrice *
+      this.market.price.basePrice *
       ((profileDrift + regimeDrift) / 10000) *
       dtSec *
       (0.62 + longSwing * 0.68);
 
     const noiseBps = profile.noiseBps * runtime.noiseTilt + regime.noiseBps * 0.55;
     const noiseTerm =
-      profile.basePrice * (noiseBps / 10000) * DealEngine.gaussianRandom() * Math.sqrt(dtSec * 1.9);
+      this.market.price.basePrice * (noiseBps / 10000) * DealEngine.gaussianRandom() * Math.sqrt(dtSec * 1.9);
 
     const pullStrength = Math.min(profile.meanRevert + regime.meanRevert * 0.25, 0.85);
     const pullTerm = (anchorPrice - prevPrice) * pullStrength * Math.min(dtSec * 1.15, 1);
@@ -580,16 +636,16 @@ class DealEngine {
     if (Math.random() < shockProb) {
       const shockDirection = Math.random() < 0.5 ? -1 : 1;
       shockTerm =
-        profile.basePrice *
+        this.market.price.basePrice *
         (profile.shockBps / 10000) *
         shockDirection *
         randomBetween(0.45, 1.2);
     }
 
     const unclampedPrice = prevPrice + driftTerm + noiseTerm + pullTerm + shockTerm;
-    const maxJump = Math.max(prevPrice * 0.2, profile.basePrice * 0.07);
+    const maxJump = Math.max(prevPrice * 0.2, this.market.price.basePrice * 0.07);
     const boundedPrice = Math.min(Math.max(unclampedPrice, prevPrice - maxJump), prevPrice + maxJump);
-    const price = Math.max(profile.basePrice * 0.08, boundedPrice);
+    const price = Math.max(this.market.price.basePrice * 0.08, boundedPrice);
 
     const syntheticRegime: RegimeState = {
       ...regime,
@@ -800,6 +856,8 @@ class DealEngine {
 
     this.selectedGraphMode = nextMode;
     this.selectedTimeframe = nextTimeframe;
+    this.timeframeMs = timeframeToMs(this.selectedTimeframe);
+    this.resetSyntheticClock();
 
     if (!this.currentDeal) {
       if (timeframeChanged) {
@@ -820,6 +878,16 @@ class DealEngine {
   getControlState(): EngineControlState {
     return {
       symbol: this.getSelectedSymbol(),
+      market: {
+        id: this.market.id,
+        label: this.market.label,
+        regimeOverride: this.regimeOverride,
+        intensity: this.intensity,
+        activeRegime: this.regime?.kind ?? null,
+        trendDirection: this.regime?.trendDirection ?? 0,
+        rules: this.market.rules,
+        ai: this.market.ai,
+      },
       selectedGraphMode: this.selectedGraphMode,
       timeframe: this.selectedTimeframe,
       activeDealId: this.currentDeal?.id ?? null,
@@ -838,6 +906,38 @@ class DealEngine {
     this.emitControlState();
     return this.getControlState();
   }
+
+  async setMarketAndOverride(next: { activeMarketId?: string; regimeOverride?: RegimeOverride; intensity?: number }) {
+    const updated = await setEngineConfig({
+      activeMarketId: next.activeMarketId,
+      regimeOverride: next.regimeOverride,
+      intensity: next.intensity,
+    });
+
+    this.market = getMarket(updated.activeMarketId);
+    this.regimeOverride = updated.regimeOverride;
+    this.intensity = updated.intensity;
+    this.price = this.market.price.basePrice;
+    this.regime = null;
+    this.nextRegimeSwitch = 0;
+    this.syntheticModeStates = {};
+    this.resetSyntheticClock();
+    this.reseedSyntheticMarket(true, true);
+    this.emitControlState();
+    return this.getControlState();
+  }
+
+  triggerMarketEvent(kind: 'NEWS_SPIKE' | 'DUMP' | 'SQUEEZE', strength = 1) {
+    const k = Math.max(0.2, Math.min(3, strength));
+    const event = kind === 'NEWS_SPIKE' ? this.market.events.newsSpike(k) : kind === 'DUMP' ? this.market.events.dump(k) : this.market.events.squeeze(k);
+    this.activeEvent = { event, startedAt: Date.now() };
+    return event;
+  }
+
+  getTradingRules() {
+    return this.market.rules;
+  }
+
 
   getCurrentPrice() {
     return this.price || this.currentDeal?.basePrice || 0;
@@ -860,7 +960,7 @@ class DealEngine {
   }
 
   getSelectedSymbol() {
-    return this.currentDeal?.symbol ?? this.selectedGraphMode;
+    return this.currentDeal?.symbol ?? this.market.id;
   }
 
   getSelectedTimeframe() {
@@ -888,7 +988,7 @@ class DealEngineDisabled {
   }
 
   getSelectedSymbol() {
-    return DEFAULT_GRAPH_MODE;
+    return 'BTC';
   }
 
   getSelectedTimeframe() {
@@ -902,8 +1002,19 @@ class DealEngineDisabled {
   }
 
   getControlState(): EngineControlState {
+    const fallbackMarket = getMarket('BTC');
     return {
       symbol: DEFAULT_GRAPH_MODE,
+      market: {
+        id: fallbackMarket.id,
+        label: fallbackMarket.label,
+        regimeOverride: 'AUTO',
+        intensity: 1,
+        activeRegime: null,
+        trendDirection: 0,
+        rules: fallbackMarket.rules,
+        ai: fallbackMarket.ai,
+      },
       selectedGraphMode: DEFAULT_GRAPH_MODE,
       timeframe: DEFAULT_GRAPH_TIMEFRAME,
       activeDealId: null,
@@ -920,6 +1031,18 @@ class DealEngineDisabled {
 
   notifyControlState() {
     return this.getControlState();
+  }
+
+  async setMarketAndOverride() {
+    return this.getControlState();
+  }
+
+  triggerMarketEvent() {
+    return null;
+  }
+
+  getTradingRules() {
+    return { feeBps: 8, minNotionalUsd: 10, maxLeverage: 1 };
   }
 }
 

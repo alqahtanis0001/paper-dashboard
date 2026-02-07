@@ -274,6 +274,7 @@ export default function DashboardPage() {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({ ai: false, tape: false, activity: false });
   const [prefHydrated, setPrefHydrated] = useState(false);
   const [chartReady, setChartReady] = useState(false);
+  const [marketChip, setMarketChip] = useState<{ id: string; regimeOverride: string; intensity: number; aiName: string; aiTone: string }>({ id: 'BTC', regimeOverride: 'AUTO', intensity: 1, aiName: 'Calm Analyst', aiTone: 'calm' });
 
   const fetchWallet = async () => {
     const res = await fetch('/api/wallet');
@@ -525,6 +526,7 @@ export default function DashboardPage() {
       socket.on('control_state', (payload: {
         symbol?: string;
         timeframe?: string;
+        market?: { id?: string; regimeOverride?: string; intensity?: number; ai?: { name?: string; tone?: string } };
         metaStatus?: { text?: string };
         ai?: {
           signals?: ModelSignal[];
@@ -535,6 +537,15 @@ export default function DashboardPage() {
       }) => {
         if (payload.symbol) setSelectedSymbol(normalizeGraphMode(payload.symbol));
         if (payload.timeframe) setTimeframe(normalizeGraphTimeframe(payload.timeframe));
+        if (payload.market?.id) {
+          setMarketChip({
+            id: payload.market.id,
+            regimeOverride: payload.market.regimeOverride ?? 'AUTO',
+            intensity: payload.market.intensity ?? 1,
+            aiName: payload.market.ai?.name ?? 'Calm Analyst',
+            aiTone: payload.market.ai?.tone ?? 'calm',
+          });
+        }
         if (payload.metaStatus?.text) setMetaStatusText(payload.metaStatus.text);
         if (payload.ai?.signals) setSignals(payload.ai.signals);
         if (payload.ai?.meta) setMeta(payload.ai.meta);
@@ -596,6 +607,10 @@ export default function DashboardPage() {
     if (!chartReady || !prefHydrated) return;
     const controller = new AbortController();
     const timer = setTimeout(() => {
+      candleSeries.current?.setData([]);
+      volumeSeries.current?.setData([]);
+      candlesRef.current = [];
+      volumesRef.current = new Map();
       const params = new URLSearchParams({ selectedSymbol, timeframe });
       void fetch(`/api/chart?${params.toString()}`, { cache: 'no-store', signal: controller.signal })
         .then(async (res) => (res.ok ? (res.json() as Promise<ChartBootstrapResponse>) : null))
@@ -608,6 +623,21 @@ export default function DashboardPage() {
       clearTimeout(timer);
     };
   }, [selectedSymbol, timeframe, chartReady, prefHydrated, applyBootstrapData]);
+
+
+  useEffect(() => {
+    if (!chartReady || !prefHydrated) return;
+    const controller = new AbortController();
+    candleSeries.current?.setData([]);
+    volumeSeries.current?.setData([]);
+    candlesRef.current = [];
+    volumesRef.current = new Map();
+    void fetch('/api/chart', { cache: 'no-store', signal: controller.signal })
+      .then(async (res) => (res.ok ? (res.json() as Promise<ChartBootstrapResponse>) : null))
+      .then((bootstrap) => applyBootstrapData(bootstrap, true))
+      .catch(() => null);
+    return () => controller.abort();
+  }, [marketChip.id, chartReady, prefHydrated, applyBootstrapData]);
 
   useEffect(() => {
     if (!chartApi.current || typeof zoomLogical !== 'number') return;
@@ -785,6 +815,10 @@ export default function DashboardPage() {
             ))}
           </select>
         </div>
+        <div style={{ color: 'var(--muted)', marginBottom: 6 }}>
+          {marketChip.id} • {marketChip.regimeOverride} • x{marketChip.intensity.toFixed(2)}
+        </div>
+        <div style={{ color: 'var(--muted)', marginBottom: 6 }}>AI: {marketChip.aiName} ({marketChip.aiTone})</div>
         <div style={styles.legendRow}>
           <span style={{ ...styles.legendItem, color: '#ffd166' }}>المتوسط الأسي 20</span>
           <span style={{ ...styles.legendItem, color: '#6ea8ff' }}>المتوسط الأسي 50</span>

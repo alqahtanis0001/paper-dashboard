@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
   }
 
   const wallet = await getWallet();
-  const { amountUsd } = await req.json().catch(() => ({}));
+  const { amountUsd, leverage: requestedLeverage } = await req.json().catch(() => ({} as { amountUsd?: number; leverage?: number }));
   if (typeof amountUsd !== 'number' || !Number.isFinite(amountUsd) || amountUsd <= 0) {
     logServerAction('trade.buy', 'warn', { reason: 'invalid_amount' });
     return NextResponse.json({ error: 'amountUsd must be > 0' }, { status: 400 });
@@ -41,9 +41,16 @@ export async function POST(req: NextRequest) {
   const symbol = activeDeal?.symbol ?? 'MARKET';
   const midPrice = dealEngine.getCurrentPrice() || activeDeal?.basePrice || 100;
   const regimeVolatility = dealEngine.getRegimeVolatility();
+  const rules = dealEngine.getTradingRules();
 
-  const { fillPrice, feeUsd: unitFeeUsd, slippageUsd: unitSlippageUsd, latencyMs } = simulateExecution(midPrice, 'buy', regimeVolatility);
-  const quantity = amountUsd / fillPrice;
+  if (amountUsd < rules.minNotionalUsd) {
+    return NextResponse.json({ error: `amountUsd must be >= ${rules.minNotionalUsd}` }, { status: 400 });
+  }
+
+  const leverage = Number.isFinite(requestedLeverage) ? Math.max(1, Math.min(Number(requestedLeverage), rules.maxLeverage)) : 1;
+
+  const { fillPrice, feeUsd: unitFeeUsd, slippageUsd: unitSlippageUsd, latencyMs } = simulateExecution(midPrice, 'buy', regimeVolatility, rules.feeBps);
+  const quantity = (amountUsd * leverage) / fillPrice;
   const feeUsd = unitFeeUsd * quantity;
   const slippageUsd = unitSlippageUsd * quantity;
   const pendingAggregate = await prisma.withdrawalRequest.aggregate({
@@ -70,7 +77,7 @@ export async function POST(req: NextRequest) {
           symbol,
           entryPrice: fillPrice,
           entryTime: new Date(),
-          sizeUsd: amountUsd,
+          sizeUsd: amountUsd * leverage,
           walletId: wallet.id,
           metaDealId: activeDeal?.id ?? undefined,
         },
@@ -85,7 +92,7 @@ export async function POST(req: NextRequest) {
           feeUsd,
           slippageUsd,
           latencyMs,
-          sizeUsd: amountUsd,
+          sizeUsd: amountUsd * leverage,
           walletId: wallet.id,
           dealId: activeDeal?.id ?? undefined,
         },

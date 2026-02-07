@@ -30,11 +30,12 @@ export async function POST(req: NextRequest) {
 
   const midPrice = dealEngine.getCurrentPrice() || position.entryPrice;
   const regimeVolatility = dealEngine.getRegimeVolatility();
+  const rules = dealEngine.getTradingRules();
 
   const fraction = sellPercent / 100;
   const qtyTotal = position.sizeUsd / position.entryPrice;
   const qtyToSell = qtyTotal * fraction;
-  const { fillPrice, feeUsd: unitFeeUsd, slippageUsd: unitSlippageUsd, latencyMs } = simulateExecution(midPrice, 'sell', regimeVolatility);
+  const { fillPrice, feeUsd: unitFeeUsd, slippageUsd: unitSlippageUsd, latencyMs } = simulateExecution(midPrice, 'sell', regimeVolatility, rules.feeBps);
 
   const proceeds = qtyToSell * fillPrice;
   const feeUsd = unitFeeUsd * qtyToSell;
@@ -42,6 +43,10 @@ export async function POST(req: NextRequest) {
   const slippageUsd = unitSlippageUsd * qtyToSell;
   const remainingSizeUsd = position.sizeUsd * (1 - fraction);
   const soldSizeUsd = position.sizeUsd * fraction;
+
+  if (soldSizeUsd < rules.minNotionalUsd) {
+    return NextResponse.json({ error: `sell notional must be >= ${rules.minNotionalUsd}` }, { status: 400 });
+  }
 
   try {
     const result = await prisma.$transaction(async (tx) => {

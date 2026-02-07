@@ -184,3 +184,12 @@ model AiSignalLog {
   metaCorrect      Boolean?
   hitRatesJson     Json?
 }
+
+model EngineConfig {
+  id             String   @id @default("global")
+  activeMarketId String   @default("BTC")
+  regimeOverride String?  @default("AUTO")
+  intensity      Float    @default(1.0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}

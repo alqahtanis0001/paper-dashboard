@@ -69,6 +69,12 @@ type AiSignal = {
 
 type ControlState = {
   symbol: string;
+  market: {
+    id: string;
+    label: string;
+    regimeOverride: 'AUTO' | 'BULL' | 'BEAR' | 'CHOPPY' | 'HIGH_VOL' | 'LOW_VOL';
+    intensity: number;
+  };
   selectedGraphMode: GraphMode;
   timeframe: GraphTimeframe;
   activeDealId: string | null;
@@ -280,6 +286,10 @@ export default function AdminPage() {
   const [controlSymbol, setControlSymbol] = useState<GraphMode>('AUTO');
   const [controlTimeframe, setControlTimeframe] = useState<GraphTimeframe>('1s');
   const [syncingControl, setSyncingControl] = useState(false);
+  const [markets, setMarkets] = useState<Array<{ id: string; label: string }>>([]);
+  const [activeMarketId, setActiveMarketId] = useState('BTC');
+  const [regimeOverride, setRegimeOverride] = useState<'AUTO' | 'BULL' | 'BEAR' | 'CHOPPY' | 'HIGH_VOL' | 'LOW_VOL'>('AUTO');
+  const [intensity, setIntensity] = useState(1);
   const [runtimeInfo, setRuntimeInfo] = useState<RuntimeDiagnostics | null>(null);
   const [loadingRuntimeInfo, setLoadingRuntimeInfo] = useState(false);
   const [userAccess, setUserAccess] = useState<UserAccessContext | null>(null);
@@ -329,6 +339,9 @@ export default function AdminPage() {
     setControlState(next);
     setControlSymbol(normalizeGraphMode(next.selectedGraphMode));
     setControlTimeframe(normalizeGraphTimeframe(next.timeframe));
+    if (next.market?.id) setActiveMarketId(next.market.id);
+    if (next.market?.regimeOverride) setRegimeOverride(next.market.regimeOverride);
+    if (typeof next.market?.intensity === 'number') setIntensity(next.market.intensity);
   }, []);
 
   const loadControlState = useCallback(async () => {
@@ -380,10 +393,17 @@ export default function AdminPage() {
     setRuntimeInfo(body.runtime ?? null);
   }, []);
 
+  const loadMarkets = useCallback(async () => {
+    const res = await fetch('/api/markets', { cache: 'no-store' });
+    if (!res.ok) return;
+    const body = (await res.json()) as { markets?: Array<{ id: string; label: string }> };
+    setMarkets(body.markets ?? []);
+  }, []);
+
   const refreshAll = useCallback(async () => {
     setError('');
-    await Promise.all([loadDeals(), loadWithdrawals(), loadControlState(), loadUserAccess(), loadRuntimeInfo()]);
-  }, [loadDeals, loadWithdrawals, loadControlState, loadUserAccess, loadRuntimeInfo]);
+    await Promise.all([loadDeals(), loadWithdrawals(), loadControlState(), loadUserAccess(), loadRuntimeInfo(), loadMarkets()]);
+  }, [loadDeals, loadWithdrawals, loadControlState, loadUserAccess, loadRuntimeInfo, loadMarkets]);
 
   useEffect(() => {
     if (!authed || !autoRefresh) return;
@@ -498,7 +518,22 @@ export default function AdminPage() {
 
     const body = (await res.json()) as { controlState?: ControlState };
     if (body.controlState) applyControlState(body.controlState);
+
+    await fetch('/api/admin/market-control', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ activeMarketId, regimeOverride, intensity }),
+    }).catch(() => null);
+
     setInfo('Control state synchronized.');
+  };
+
+  const triggerEvent = async (kind: 'NEWS_SPIKE' | 'DUMP' | 'SQUEEZE') => {
+    await fetch('/api/admin/trigger-event', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind, strength: intensity }),
+    }).catch(() => null);
   };
 
   const applySymbolPreset = (symbol: string) => {
@@ -1062,10 +1097,33 @@ export default function AdminPage() {
             </select>
           </div>
 
+          <div>
+            <div style={styles.label}>Active Market</div>
+            <select style={styles.input} value={activeMarketId} onChange={(e) => setActiveMarketId(e.target.value)}>
+              {(markets.length ? markets : [{ id: 'BTC', label: 'Bitcoin' }]).map((m) => (
+                <option key={m.id} value={m.id}>{m.id} • {m.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <div style={styles.label}>Regime Override</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {(['AUTO', 'BULL', 'BEAR', 'CHOPPY', 'HIGH_VOL', 'LOW_VOL'] as const).map((item) => (
+                <button key={item} type="button" onClick={() => setRegimeOverride(item)} style={{ ...styles.quickBtn, borderColor: regimeOverride === item ? '#5df3a6' : '#223' }}>{item}</button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div style={styles.label}>Intensity x{intensity.toFixed(2)}</div>
+            <input style={styles.input} type="range" min={0.25} max={2.5} step={0.05} value={intensity} onChange={(e) => setIntensity(Number(e.target.value))} />
+          </div>
+
           <div style={styles.syncStatCard}>
             <div style={styles.label}>Live Symbol</div>
             <strong>{controlState?.symbol ?? '--'}</strong>
-            <span style={styles.mutedText}>Selected Mode: {controlState?.selectedGraphMode ?? '--'}</span>
+            <span style={styles.mutedText}>Market: {controlState?.market?.id ?? '--'} • {controlState?.market?.regimeOverride ?? 'AUTO'} • x{(controlState?.market?.intensity ?? 1).toFixed(2)}</span>
           </div>
 
           <div style={styles.syncStatCard}>
@@ -1084,6 +1142,11 @@ export default function AdminPage() {
           <span style={styles.syncChip}>Meta Hit {controlState?.ai.hitRates.meta ?? 0}%</span>
           <span style={styles.syncChip}>Signals {controlState?.ai.signals.length ?? 0}</span>
           <span style={styles.syncChip}>AI Update {formatClock(controlState?.ai.lastSignalAt)}</span>
+        </div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          <button type="button" onClick={() => void triggerEvent('NEWS_SPIKE')} style={styles.quickBtn}>NEWS_SPIKE</button>
+          <button type="button" onClick={() => void triggerEvent('DUMP')} style={styles.quickBtn}>DUMP</button>
+          <button type="button" onClick={() => void triggerEvent('SQUEEZE')} style={styles.quickBtn}>SQUEEZE</button>
         </div>
         <div style={{ ...styles.mutedText, marginTop: 6 }}>
           Status: {controlState?.metaStatus.text ?? 'Waiting for state...'}
@@ -1300,7 +1363,12 @@ export default function AdminPage() {
                 </button>
               </div>
             </div>
-            <div style={{ ...styles.mutedText, marginTop: 6 }}>
+            <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          <button type="button" onClick={() => void triggerEvent('NEWS_SPIKE')} style={styles.quickBtn}>NEWS_SPIKE</button>
+          <button type="button" onClick={() => void triggerEvent('DUMP')} style={styles.quickBtn}>DUMP</button>
+          <button type="button" onClick={() => void triggerEvent('SQUEEZE')} style={styles.quickBtn}>SQUEEZE</button>
+        </div>
+        <div style={{ ...styles.mutedText, marginTop: 6 }}>
               Current withdrawal tax: {formatPercent(withdrawTaxPercent)}%
             </div>
             <div style={{ marginTop: 10, display: 'grid', gap: 10 }}>
